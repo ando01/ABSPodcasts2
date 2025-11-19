@@ -6,6 +6,14 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		BD8F82B42ECE5C2000084EEB /* AudioSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD8F82B32ECE5C1D00084EEB /* AudioSessionManager.swift */; };
+		BDA5D63D2ECE1713004B42C8 /* ABSClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDA5D63C2ECE16FE004B42C8 /* ABSClient.swift */; };
+		BDA5D63F2ECE206F004B42C8 /* LibraryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDA5D63E2ECE206A004B42C8 /* LibraryDetailView.swift */; };
+		BDA5D6412ECE2C8E004B42C8 /* PodcastDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDA5D6402ECE2C8C004B42C8 /* PodcastDetailView.swift */; };
+		BDA5D6432ECE3726004B42C8 /* NowPlayingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDA5D6422ECE3724004B42C8 /* NowPlayingView.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		BDA5D6202ECE153F004B42C8 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -24,14 +32,32 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		BD8F82B32ECE5C1D00084EEB /* AudioSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSessionManager.swift; sourceTree = "<group>"; };
 		BDA5D6122ECE153E004B42C8 /* ABSPodcasts.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ABSPodcasts.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BDA5D61F2ECE153F004B42C8 /* ABSPodcastsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ABSPodcastsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BDA5D6292ECE153F004B42C8 /* ABSPodcastsUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ABSPodcastsUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BDA5D63C2ECE16FE004B42C8 /* ABSClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ABSClient.swift; sourceTree = "<group>"; };
+		BDA5D63E2ECE206A004B42C8 /* LibraryDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryDetailView.swift; sourceTree = "<group>"; };
+		BDA5D6402ECE2C8C004B42C8 /* PodcastDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PodcastDetailView.swift; sourceTree = "<group>"; };
+		BDA5D6422ECE3724004B42C8 /* NowPlayingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		BD8F82B22ECE4F0E00084EEB /* Exceptions for "ABSPodcasts" folder in "ABSPodcasts" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = BDA5D6112ECE153E004B42C8 /* ABSPodcasts */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		BDA5D6142ECE153E004B42C8 /* ABSPodcasts */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				BD8F82B22ECE4F0E00084EEB /* Exceptions for "ABSPodcasts" folder in "ABSPodcasts" target */,
+			);
 			path = ABSPodcasts;
 			sourceTree = "<group>";
 		};
@@ -75,6 +101,11 @@
 		BDA5D6092ECE153E004B42C8 = {
 			isa = PBXGroup;
 			children = (
+				BD8F82B32ECE5C1D00084EEB /* AudioSessionManager.swift */,
+				BDA5D6422ECE3724004B42C8 /* NowPlayingView.swift */,
+				BDA5D6402ECE2C8C004B42C8 /* PodcastDetailView.swift */,
+				BDA5D63E2ECE206A004B42C8 /* LibraryDetailView.swift */,
+				BDA5D63C2ECE16FE004B42C8 /* ABSClient.swift */,
 				BDA5D6142ECE153E004B42C8 /* ABSPodcasts */,
 				BDA5D6222ECE153F004B42C8 /* ABSPodcastsTests */,
 				BDA5D62C2ECE153F004B42C8 /* ABSPodcastsUITests */,
@@ -236,6 +267,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BDA5D6432ECE3726004B42C8 /* NowPlayingView.swift in Sources */,
+				BDA5D63F2ECE206F004B42C8 /* LibraryDetailView.swift in Sources */,
+				BDA5D6412ECE2C8E004B42C8 /* PodcastDetailView.swift in Sources */,
+				BD8F82B42ECE5C2000084EEB /* AudioSessionManager.swift in Sources */,
+				BDA5D63D2ECE1713004B42C8 /* ABSClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -390,10 +426,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = V662XDHDZX;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ABSPodcasts/Info.plist;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -432,10 +470,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = V662XDHDZX;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ABSPodcasts/Info.plist;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;

@@ -9,9 +9,15 @@ import SwiftUI
 
 @main
 struct ABSPodcastsApp: App {
+
+    init() {
+        AudioSessionManager.configure()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
         }
     }
 }
+
