@@ -1,14 +1,8 @@
-//
-//  ABSPodcastsApp.swift
-//  ABSPodcasts
-//
-//  Created by Andrew Melton on 11/19/25.
-//
-
 import SwiftUI
 
 @main
 struct ABSPodcastsApp: App {
+    @StateObject private var playbackSettings = PlaybackSettingsViewModel()
 
     init() {
         AudioSessionManager.configure()
@@ -17,7 +11,7 @@ struct ABSPodcastsApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(playbackSettings)
         }
     }
 }
-
