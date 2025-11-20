@@ -2,11 +2,13 @@ import SwiftUI
 import AVFoundation
 import MediaPlayer
 import UIKit
+import Combine
 
 struct NowPlayingView: View {
     let episode: ABSClient.Episode
     let audioURL: URL
     let artworkURL: URL?
+    let apiToken: String? // Add optional API token for authenticated streams
 
     @State private var player: AVPlayer?
     @State private var isPlaying: Bool = false
@@ -15,8 +17,12 @@ struct NowPlayingView: View {
     @State private var timeObserverToken: Any?
     @State private var playbackSpeed: Float = 1.0
     @State private var artworkImage: UIImage? = nil
+    @State private var hasLoadedSavedProgress: Bool = false
+    @State private var showResumeAlert: Bool = false
+    @State private var savedProgress: PlaybackProgressManager.Progress?
 
     private let speeds: [Float] = [0.75, 1.0, 1.25, 1.5, 2.0]
+    private let progressManager = PlaybackProgressManager.shared
 
     var body: some View {
         ScrollView {
@@ -150,13 +156,30 @@ struct NowPlayingView: View {
             .padding(.top, 20)
         }
         .navigationTitle("Now Playing")
+        .alert("Resume Playback", isPresented: $showResumeAlert) {
+            Button("Resume") {
+                if let progress = savedProgress {
+                    seek(to: progress.currentTime)
+                }
+            }
+            Button("Start Over") {
+                progressManager.clearProgress(for: episode.id)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if let progress = savedProgress {
+                Text("Resume from \(progressManager.formatTime(progress.currentTime))?")
+            }
+        }
         .onAppear {
             setupAudioSession()
             setupRemoteCommands()
             setupPlayer()
             loadArtwork()
+            checkForSavedProgress()
         }
         .onDisappear {
+            saveCurrentProgress()
             cleanupPlayer()
         }
     }
@@ -190,7 +213,6 @@ struct NowPlayingView: View {
     private func setupRemoteCommands() {
         let commandCenter = MPRemoteCommandCenter.shared()
         
-        // Play command
         commandCenter.playCommand.isEnabled = true
         commandCenter.playCommand.addTarget { [self] _ in
             if let player = self.player {
@@ -204,18 +226,17 @@ struct NowPlayingView: View {
             return .success
         }
         
-        // Pause command
         commandCenter.pauseCommand.isEnabled = true
         commandCenter.pauseCommand.addTarget { [self] _ in
             self.player?.pause()
             DispatchQueue.main.async {
                 self.isPlaying = false
                 self.updateNowPlayingInfo()
+                self.saveCurrentProgress()
             }
             return .success
         }
         
-        // Skip forward (30 seconds)
         commandCenter.skipForwardCommand.isEnabled = true
         commandCenter.skipForwardCommand.preferredIntervals = [30]
         commandCenter.skipForwardCommand.addTarget { [self] _ in
@@ -225,7 +246,6 @@ struct NowPlayingView: View {
             return .success
         }
         
-        // Skip backward (15 seconds)
         commandCenter.skipBackwardCommand.isEnabled = true
         commandCenter.skipBackwardCommand.preferredIntervals = [15]
         commandCenter.skipBackwardCommand.addTarget { [self] _ in
@@ -235,7 +255,6 @@ struct NowPlayingView: View {
             return .success
         }
         
-        // Change playback position (scrubbing)
         commandCenter.changePlaybackPositionCommand.isEnabled = true
         commandCenter.changePlaybackPositionCommand.addTarget { [self] event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else {
@@ -253,12 +272,42 @@ struct NowPlayingView: View {
     // MARK: - Player setup & control
 
     private func setupPlayer() {
+        print("🎵 Setting up player for URL: \(audioURL.absoluteString)")
+        
+        // For Audiobookshelf, token should be in URL parameter, not header
+        // So we just create a simple AVPlayer with the URL
         let player = AVPlayer(url: audioURL)
         self.player = player
-
-        if let item = player.currentItem {
-            let asset = item.asset
-
+        
+        print("🎵 Player created, current status: \(player.status.rawValue)")
+        print("🎵 Current item: \(player.currentItem != nil ? "exists" : "nil")")
+        
+        // Monitor player item status
+        if let playerItem = player.currentItem {
+            print("🎵 Player item status: \(playerItem.status.rawValue)")
+            
+            // Observe status changes
+            playerItem.publisher(for: \.status)
+                .sink { status in
+                    print("🎵 Player item status changed to: \(status.rawValue)")
+                    if status == .failed, let error = playerItem.error {
+                        print("❌ Player item failed: \(error.localizedDescription)")
+                    }
+                }
+                .store(in: &cancellables)
+            
+            // Add observer for player errors
+            NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemFailedToPlayToEndTime,
+                object: playerItem,
+                queue: .main
+            ) { notification in
+                if let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error {
+                    print("❌ Player error: \(error.localizedDescription)")
+                }
+            }
+            
+            let asset = playerItem.asset
             Task {
                 do {
                     let durationValue = try await asset.load(.duration)
@@ -270,6 +319,8 @@ struct NowPlayingView: View {
                             print("✅ Loaded duration = \(seconds)")
                             self.updateNowPlayingInfo()
                         }
+                    } else {
+                        print("⚠️ Invalid duration: \(seconds)")
                     }
                 } catch {
                     print("❌ Failed to load duration: \(error)")
@@ -281,17 +332,25 @@ struct NowPlayingView: View {
         let token = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
             self.currentTime = time.seconds
             self.updateNowPlayingInfo()
+            
+            // Auto-save progress every 5 seconds
+            if Int(self.currentTime) % 5 == 0 {
+                self.saveCurrentProgress()
+            }
         }
         timeObserverToken = token
 
         updateNowPlayingInfo()
     }
+    
+    @State private var cancellables = Set<AnyCancellable>()
 
     private func togglePlayback() {
         guard let player = player else { return }
 
         if isPlaying {
             player.pause()
+            saveCurrentProgress()
         } else {
             player.play()
             player.rate = playbackSpeed
@@ -306,6 +365,7 @@ struct NowPlayingView: View {
         player.seek(to: newTime)
         currentTime = seconds
         updateNowPlayingInfo()
+        saveCurrentProgress()
     }
 
     private func skip(by delta: Double) {
@@ -332,7 +392,6 @@ struct NowPlayingView: View {
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         
-        // Disable remote commands
         let commandCenter = MPRemoteCommandCenter.shared()
         commandCenter.playCommand.isEnabled = false
         commandCenter.pauseCommand.isEnabled = false
@@ -389,5 +448,26 @@ struct NowPlayingView: View {
         }
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+    
+    // MARK: - Progress Management
+    
+    private func checkForSavedProgress() {
+        if let progress = progressManager.loadProgress(for: episode.id) {
+            // Only show resume alert if more than 5% played and less than 95% (not completed)
+            if progress.progressPercentage > 5 && !progress.isCompleted {
+                savedProgress = progress
+                showResumeAlert = true
+            }
+        }
+    }
+    
+    private func saveCurrentProgress() {
+        guard duration > 0 else { return }
+        progressManager.saveProgress(
+            episodeId: episode.id,
+            currentTime: currentTime,
+            duration: duration
+        )
     }
 }

@@ -12,7 +12,7 @@ struct LibraryDetailView: View {
     // Filtering & Sorting
     @State private var searchText: String = ""
     @State private var selectedTag: String? = nil
-    @State private var sortOption: SortOption = .titleAZ
+    @State private var sortOption: SortOption = .newestFirst
     @State private var showingFilterSheet: Bool = false
     
     enum SortOption: String, CaseIterable, Identifiable {
@@ -22,6 +22,11 @@ struct LibraryDetailView: View {
         case oldestFirst = "Oldest First"
         
         var id: String { rawValue }
+    }
+    
+    // Check if this is a podcast library
+    private var isPodcastLibrary: Bool {
+        library.mediaType.lowercased() == "podcast"
     }
     
     // Computed: all unique tags from items
@@ -38,7 +43,8 @@ struct LibraryDetailView: View {
         if !searchText.isEmpty {
             result = result.filter { item in
                 item.displayTitle.localizedCaseInsensitiveContains(searchText) ||
-                (item.displayDescription?.localizedCaseInsensitiveContains(searchText) ?? false)
+                (item.displayDescription?.localizedCaseInsensitiveContains(searchText) ?? false) ||
+                (item.media?.metadata?.author?.localizedCaseInsensitiveContains(searchText) ?? false)
             }
         }
         
@@ -61,20 +67,32 @@ struct LibraryDetailView: View {
         
         return result
     }
+    
+    // Helper to build cover art URL
+    private func coverArtURL(for item: ABSClient.LibraryItem) -> URL? {
+        guard let base = URL(string: serverURL) else { return nil }
+        return base.appending(path: "/api/items/\(item.id)/cover")
+    }
 
     var body: some View {
         List {
             // Library info section
             Section {
-                Text(library.name)
-                    .font(.title2)
-                Text("Media type: \(library.mediaType)")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                HStack {
+                    Image(systemName: isPodcastLibrary ? "mic.fill" : "book.fill")
+                        .foregroundStyle(isPodcastLibrary ? .blue : .green)
+                    VStack(alignment: .leading) {
+                        Text(library.name)
+                            .font(.title2)
+                        Text(isPodcastLibrary ? "Podcasts" : "Audiobooks")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             
             // Active filters display
-            if selectedTag != nil || sortOption != .titleAZ {
+            if selectedTag != nil || sortOption != .newestFirst {
                 Section {
                     HStack {
                         if let tag = selectedTag {
@@ -83,18 +101,18 @@ struct LibraryDetailView: View {
                             }
                         }
                         
-                        if sortOption != .titleAZ {
+                        if sortOption != .newestFirst {
                             FilterChip(text: sortOption.rawValue, isSort: true) {
-                                sortOption = .titleAZ
+                                sortOption = .newestFirst
                             }
                         }
                         
                         Spacer()
                         
-                        if selectedTag != nil || sortOption != .titleAZ {
+                        if selectedTag != nil || sortOption != .newestFirst {
                             Button("Clear All") {
                                 selectedTag = nil
-                                sortOption = .titleAZ
+                                sortOption = .newestFirst
                             }
                             .font(.caption)
                             .foregroundStyle(.blue)
@@ -124,46 +142,76 @@ struct LibraryDetailView: View {
             // Items list
             else if !items.isEmpty {
                 Section(header: HStack {
-                    Text("Podcasts (\(filteredItems.count))")
+                    Text("\(isPodcastLibrary ? "Podcasts" : "Audiobooks") (\(filteredItems.count))")
                     Spacer()
                 }) {
                     if filteredItems.isEmpty {
-                        Text("No podcasts match your filters")
+                        Text("No items match your filters")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(filteredItems) { item in
                             NavigationLink(
-                                destination: PodcastDetailView(
-                                    podcast: item,
-                                    serverURL: serverURL,
-                                    apiToken: apiToken
-                                )
+                                destination: destinationView(for: item)
                             ) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(item.displayTitle)
-                                        .font(.body)
-
-                                    if let desc = item.displayDescription, !desc.isEmpty {
-                                        Text(desc)
-                                            .font(.caption)
-                                            .lineLimit(2)
-                                            .foregroundStyle(.secondary)
+                                HStack(spacing: 12) {
+                                    // Cover Art
+                                    if let artworkURL = coverArtURL(for: item) {
+                                        AsyncImage(url: artworkURL) { phase in
+                                            switch phase {
+                                            case .empty:
+                                                ProgressView()
+                                                    .frame(width: 60, height: 60)
+                                            case .success(let image):
+                                                image
+                                                    .resizable()
+                                                    .scaledToFill()
+                                                    .frame(width: 60, height: 60)
+                                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                            case .failure:
+                                                placeholderArtwork(for: item)
+                                            @unknown default:
+                                                placeholderArtwork(for: item)
+                                            }
+                                        }
+                                    } else {
+                                        placeholderArtwork(for: item)
                                     }
+                                    
+                                    // Item Info
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(item.displayTitle)
+                                            .font(.body)
+                                            .lineLimit(2)
+                                        
+                                        if let author = item.media?.metadata?.author {
+                                            Text(author)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
 
-                                    let tags = item.displayTags
-                                    if !tags.isEmpty {
-                                        ScrollView(.horizontal, showsIndicators: false) {
-                                            HStack(spacing: 4) {
-                                                ForEach(tags, id: \.self) { tag in
-                                                    Text(tag)
-                                                        .font(.caption2)
-                                                        .padding(.horizontal, 6)
-                                                        .padding(.vertical, 2)
-                                                        .background(
-                                                            RoundedRectangle(cornerRadius: 4)
-                                                                .fill(Color.blue.opacity(0.15))
-                                                        )
+                                        if let desc = item.displayDescription, !desc.isEmpty {
+                                            Text(desc)
+                                                .font(.caption)
+                                                .lineLimit(2)
+                                                .foregroundStyle(.secondary)
+                                        }
+
+                                        let tags = item.displayTags
+                                        if !tags.isEmpty {
+                                            ScrollView(.horizontal, showsIndicators: false) {
+                                                HStack(spacing: 4) {
+                                                    ForEach(tags, id: \.self) { tag in
+                                                        Text(tag)
+                                                            .font(.caption2)
+                                                            .padding(.horizontal, 6)
+                                                            .padding(.vertical, 2)
+                                                            .background(
+                                                                RoundedRectangle(cornerRadius: 4)
+                                                                    .fill(isPodcastLibrary ? Color.blue.opacity(0.15) : Color.green.opacity(0.15))
+                                                            )
+                                                            .foregroundStyle(isPodcastLibrary ? .blue : .green)
+                                                    }
                                                 }
                                             }
                                         }
@@ -185,7 +233,7 @@ struct LibraryDetailView: View {
             }
         }
         .navigationTitle(library.name)
-        .searchable(text: $searchText, prompt: "Search podcasts")
+        .searchable(text: $searchText, prompt: isPodcastLibrary ? "Search podcasts" : "Search audiobooks")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
@@ -204,6 +252,36 @@ struct LibraryDetailView: View {
         }
         .onAppear {
             loadItems()
+        }
+    }
+    
+    // MARK: - Destination View Router
+    
+    @ViewBuilder
+    private func destinationView(for item: ABSClient.LibraryItem) -> some View {
+        if isPodcastLibrary {
+            PodcastDetailView(
+                podcast: item,
+                serverURL: serverURL,
+                apiToken: apiToken
+            )
+        } else {
+            AudiobookDetailView(
+                audiobook: item,
+                serverURL: serverURL,
+                apiToken: apiToken
+            )
+        }
+    }
+    
+    private func placeholderArtwork(for item: ABSClient.LibraryItem) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.gray.opacity(0.2))
+                .frame(width: 60, height: 60)
+            Image(systemName: isPodcastLibrary ? "music.note" : "book.closed")
+                .font(.system(size: 24))
+                .foregroundStyle(.gray)
         }
     }
 
@@ -299,7 +377,7 @@ struct FilterSheet: View {
                             selectedTag = nil
                         } label: {
                             HStack {
-                                Text("All Podcasts")
+                                Text("All Items")
                                 Spacer()
                                 if selectedTag == nil {
                                     Image(systemName: "checkmark")
