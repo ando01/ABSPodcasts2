@@ -8,7 +8,7 @@ struct NowPlayingView: View {
     let episode: ABSClient.Episode
     let audioURL: URL
     let artworkURL: URL?
-    let apiToken: String? // Add optional API token for authenticated streams
+    let apiToken: String?
 
     @State private var player: AVPlayer?
     @State private var isPlaying: Bool = false
@@ -20,58 +20,91 @@ struct NowPlayingView: View {
     @State private var hasLoadedSavedProgress: Bool = false
     @State private var showResumeAlert: Bool = false
     @State private var savedProgress: PlaybackProgressManager.Progress?
+    @State private var isLoadingArtwork = true
+    @State private var cancellables = Set<AnyCancellable>()
 
     private let speeds: [Float] = [0.75, 1.0, 1.25, 1.5, 2.0]
     private let progressManager = PlaybackProgressManager.shared
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 24) {
-                // Artwork
-                if let artworkImage {
-                    Image(uiImage: artworkImage)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: 260, maxHeight: 260)
-                        .cornerRadius(18)
-                } else if let artworkURL {
-                    AsyncImage(url: artworkURL) { phase in
-                        switch phase {
-                        case .empty:
-                            ProgressView()
-                                .frame(width: 200, height: 200)
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFit()
-                                .frame(maxWidth: 260, maxHeight: 260)
-                                .cornerRadius(18)
-                        case .failure:
-                            placeholderArtwork
-                        @unknown default:
-                            placeholderArtwork
-                        }
+            VStack(spacing: 28) {
+                // Artwork with pulse animation
+                ZStack {
+                    // Animated glow effect when playing
+                    if isPlaying {
+                        Circle()
+                            .fill(
+                                RadialGradient(
+                                    colors: [Color.blue.opacity(0.3), Color.clear],
+                                    center: .center,
+                                    startRadius: 100,
+                                    endRadius: 150
+                                )
+                            )
+                            .frame(width: 300, height: 300)
+                            .scaleEffect(isPlaying ? 1.1 : 1.0)
+                            .opacity(isPlaying ? 1.0 : 0.0)
+                            .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: isPlaying)
                     }
-                } else {
-                    placeholderArtwork
+                    
+                    // Artwork
+                    if let artworkImage {
+                        Image(uiImage: artworkImage)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: 280, maxHeight: 280)
+                            .cornerRadius(24)
+                            .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
+                            .transition(.scale.combined(with: .opacity))
+                    } else if let artworkURL {
+                        AsyncImage(url: artworkURL) { phase in
+                            switch phase {
+                            case .empty:
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 24)
+                                        .fill(Color.gray.opacity(0.2))
+                                        .frame(width: 280, height: 280)
+                                    ProgressView()
+                                }
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxWidth: 280, maxHeight: 280)
+                                    .cornerRadius(24)
+                                    .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
+                                    .transition(.scale.combined(with: .opacity))
+                            case .failure:
+                                placeholderArtwork
+                            @unknown default:
+                                placeholderArtwork
+                            }
+                        }
+                    } else {
+                        placeholderArtwork
+                    }
+                }
+                .padding(.top, 40)
+
+                // Title and Date
+                VStack(spacing: 8) {
+                    Text(episode.title)
+                        .font(.title2)
+                        .fontWeight(.bold)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+
+                    if let date = episode.bestDate {
+                        Text(date.formatted(date: .abbreviated, time: .shortened))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
-                // Title
-                Text(episode.title)
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-
-                // Date
-                if let date = episode.bestDate {
-                    Text(date.formatted(date: .abbreviated, time: .shortened))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                // Slider + times
-                VStack {
+                // Progress slider with enhanced design
+                VStack(spacing: 12) {
+                    // Custom styled slider
                     Slider(
                         value: Binding(
                             get: { currentTime },
@@ -82,80 +115,143 @@ struct NowPlayingView: View {
                         ),
                         in: 0...max(duration, 1)
                     )
-
+                    .tint(.blue)
+                    
+                    // Time labels
                     HStack {
                         Text(formatTime(currentTime))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
                         Spacer()
                         Text(formatTime(duration))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
                     }
-                    .font(.caption)
                 }
-                .padding(.horizontal)
+                .padding(.horizontal, 32)
 
-                // Transport controls
-                HStack(spacing: 40) {
+                // Transport controls with animations
+                HStack(spacing: 50) {
+                    // Skip backward button
                     Button {
                         skip(by: -15)
                     } label: {
-                        Image(systemName: "gobackward.15")
-                            .resizable()
-                            .frame(width: 32, height: 32)
+                        ZStack {
+                            Circle()
+                                .fill(Color.gray.opacity(0.1))
+                                .frame(width: 60, height: 60)
+                            
+                            Image(systemName: "gobackward.15")
+                                .font(.title2)
+                                .foregroundStyle(.primary)
+                        }
                     }
+                    .buttonStyle(ScaleButtonStyle())
 
+                    // Play/Pause button with animation
                     Button(action: togglePlayback) {
-                        Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                            .resizable()
-                            .frame(width: 80, height: 80)
+                        ZStack {
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [Color.blue, Color.blue.opacity(0.8)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .frame(width: 90, height: 90)
+                                .shadow(color: .blue.opacity(0.4), radius: 12, x: 0, y: 6)
+                            
+                            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 32))
+                                .foregroundStyle(.white)
+                                .contentTransition(.symbolEffect(.replace))
+                        }
                     }
+                    .buttonStyle(ScaleButtonStyle())
 
+                    // Skip forward button
                     Button {
                         skip(by: 30)
                     } label: {
-                        Image(systemName: "goforward.30")
-                            .resizable()
-                            .frame(width: 32, height: 32)
+                        ZStack {
+                            Circle()
+                                .fill(Color.gray.opacity(0.1))
+                                .frame(width: 60, height: 60)
+                            
+                            Image(systemName: "goforward.30")
+                                .font(.title2)
+                                .foregroundStyle(.primary)
+                        }
                     }
+                    .buttonStyle(ScaleButtonStyle())
                 }
-                .padding(.top, 8)
+                .padding(.vertical, 8)
 
-                // Speed control
-                VStack(spacing: 8) {
-                    Text("Speed")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
+                // Speed control with enhanced design
+                VStack(spacing: 12) {
                     HStack {
+                        Image(systemName: "gauge.medium")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("Playback Speed")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    HStack(spacing: 8) {
                         ForEach(speeds, id: \.self) { speed in
                             Button {
-                                setSpeed(speed)
+                                withAnimation(.spring(response: 0.3)) {
+                                    setSpeed(speed)
+                                }
                             } label: {
                                 Text(String(format: "%.2gx", speed))
-                                    .font(.caption)
-                                    .padding(.vertical, 4)
-                                    .padding(.horizontal, 8)
+                                    .font(.subheadline)
+                                    .fontWeight(speed == playbackSpeed ? .bold : .regular)
+                                    .foregroundStyle(speed == playbackSpeed ? .white : .primary)
+                                    .frame(width: 60, height: 36)
                                     .background(
-                                        RoundedRectangle(cornerRadius: 8)
-                                            .fill(speed == playbackSpeed ? Color.blue.opacity(0.2) : Color.clear)
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(speed == playbackSpeed ? Color.blue : Color.gray.opacity(0.1))
                                     )
                             }
+                            .buttonStyle(ScaleButtonStyle())
                         }
                     }
                 }
+                .padding(.horizontal, 24)
 
-                // Description
+                // Description (collapsible)
                 if let desc = episode.description, !desc.isEmpty {
-                    Text(desc)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal)
-                        .padding(.top, 8)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(systemName: "text.alignleft")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("Description")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundStyle(.secondary)
+                        }
+                        
+                        Text(desc)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(5)
+                    }
+                    .padding(.horizontal, 32)
+                    .padding(.top, 8)
                 }
 
-                Spacer(minLength: 20)
+                Spacer(minLength: 40)
             }
-            .padding(.top, 20)
         }
         .navigationTitle("Now Playing")
+        .navigationBarTitleDisplayMode(.inline)
         .alert("Resume Playback", isPresented: $showResumeAlert) {
             Button("Resume") {
                 if let progress = savedProgress {
@@ -172,11 +268,13 @@ struct NowPlayingView: View {
             }
         }
         .onAppear {
-            setupAudioSession()
-            setupRemoteCommands()
-            setupPlayer()
-            loadArtwork()
-            checkForSavedProgress()
+            withAnimation(.spring(response: 0.6)) {
+                setupAudioSession()
+                setupRemoteCommands()
+                setupPlayer()
+                loadArtwork()
+                checkForSavedProgress()
+            }
         }
         .onDisappear {
             saveCurrentProgress()
@@ -186,11 +284,11 @@ struct NowPlayingView: View {
 
     private var placeholderArtwork: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 18)
+            RoundedRectangle(cornerRadius: 24)
                 .fill(Color.gray.opacity(0.2))
-                .frame(width: 220, height: 220)
+                .frame(width: 280, height: 280)
             Image(systemName: "music.note")
-                .font(.system(size: 48))
+                .font(.system(size: 72))
                 .foregroundStyle(.gray)
         }
     }
@@ -202,7 +300,6 @@ struct NowPlayingView: View {
             let audioSession = AVAudioSession.sharedInstance()
             try audioSession.setCategory(.playback, mode: .spokenAudio, options: [])
             try audioSession.setActive(true)
-            print("✅ Audio session configured")
         } catch {
             print("❌ Audio session setup failed: \(error)")
         }
@@ -265,47 +362,22 @@ struct NowPlayingView: View {
             }
             return .success
         }
-        
-        print("✅ Remote commands configured")
     }
 
     // MARK: - Player setup & control
 
     private func setupPlayer() {
-        print("🎵 Setting up player for URL: \(audioURL.absoluteString)")
-        
-        // For Audiobookshelf, token should be in URL parameter, not header
-        // So we just create a simple AVPlayer with the URL
         let player = AVPlayer(url: audioURL)
         self.player = player
         
-        print("🎵 Player created, current status: \(player.status.rawValue)")
-        print("🎵 Current item: \(player.currentItem != nil ? "exists" : "nil")")
-        
-        // Monitor player item status
         if let playerItem = player.currentItem {
-            print("🎵 Player item status: \(playerItem.status.rawValue)")
-            
-            // Observe status changes
             playerItem.publisher(for: \.status)
                 .sink { status in
-                    print("🎵 Player item status changed to: \(status.rawValue)")
                     if status == .failed, let error = playerItem.error {
                         print("❌ Player item failed: \(error.localizedDescription)")
                     }
                 }
                 .store(in: &cancellables)
-            
-            // Add observer for player errors
-            NotificationCenter.default.addObserver(
-                forName: .AVPlayerItemFailedToPlayToEndTime,
-                object: playerItem,
-                queue: .main
-            ) { notification in
-                if let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error {
-                    print("❌ Player error: \(error.localizedDescription)")
-                }
-            }
             
             let asset = playerItem.asset
             Task {
@@ -315,12 +387,11 @@ struct NowPlayingView: View {
 
                     if seconds.isFinite && seconds > 0 {
                         await MainActor.run {
-                            self.duration = seconds
-                            print("✅ Loaded duration = \(seconds)")
-                            self.updateNowPlayingInfo()
+                            withAnimation {
+                                self.duration = seconds
+                                self.updateNowPlayingInfo()
+                            }
                         }
-                    } else {
-                        print("⚠️ Invalid duration: \(seconds)")
                     }
                 } catch {
                     print("❌ Failed to load duration: \(error)")
@@ -333,7 +404,6 @@ struct NowPlayingView: View {
             self.currentTime = time.seconds
             self.updateNowPlayingInfo()
             
-            // Auto-save progress every 5 seconds
             if Int(self.currentTime) % 5 == 0 {
                 self.saveCurrentProgress()
             }
@@ -342,20 +412,20 @@ struct NowPlayingView: View {
 
         updateNowPlayingInfo()
     }
-    
-    @State private var cancellables = Set<AnyCancellable>()
 
     private func togglePlayback() {
         guard let player = player else { return }
 
-        if isPlaying {
-            player.pause()
-            saveCurrentProgress()
-        } else {
-            player.play()
-            player.rate = playbackSpeed
+        withAnimation(.spring(response: 0.3)) {
+            if isPlaying {
+                player.pause()
+                saveCurrentProgress()
+            } else {
+                player.play()
+                player.rate = playbackSpeed
+            }
+            isPlaying.toggle()
         }
-        isPlaying.toggle()
         updateNowPlayingInfo()
     }
 
@@ -403,8 +473,13 @@ struct NowPlayingView: View {
     private func formatTime(_ seconds: Double) -> String {
         guard seconds.isFinite && seconds >= 0 else { return "0:00" }
         let totalSeconds = Int(seconds)
-        let m = totalSeconds / 60
+        let h = totalSeconds / 3600
+        let m = (totalSeconds % 3600) / 60
         let s = totalSeconds % 60
+        
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        }
         return String(format: "%d:%02d", m, s)
     }
 
@@ -418,12 +493,17 @@ struct NowPlayingView: View {
                 let (data, _) = try await URLSession.shared.data(from: artworkURL)
                 if let img = UIImage(data: data) {
                     await MainActor.run {
-                        self.artworkImage = img
-                        self.updateNowPlayingInfo()
+                        withAnimation(.spring(response: 0.4)) {
+                            self.artworkImage = img
+                            self.isLoadingArtwork = false
+                            self.updateNowPlayingInfo()
+                        }
                     }
                 }
             } catch {
-                print("❌ Failed to load artwork: \(error)")
+                await MainActor.run {
+                    self.isLoadingArtwork = false
+                }
             }
         }
     }
@@ -454,7 +534,6 @@ struct NowPlayingView: View {
     
     private func checkForSavedProgress() {
         if let progress = progressManager.loadProgress(for: episode.id) {
-            // Only show resume alert if more than 5% played and less than 95% (not completed)
             if progress.progressPercentage > 5 && !progress.isCompleted {
                 savedProgress = progress
                 showResumeAlert = true
@@ -469,5 +548,15 @@ struct NowPlayingView: View {
             currentTime: currentTime,
             duration: duration
         )
+    }
+}
+
+// MARK: - Scale Button Style
+
+struct ScaleButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.92 : 1.0)
+            .animation(.spring(response: 0.2, dampingFraction: 0.6), value: configuration.isPressed)
     }
 }

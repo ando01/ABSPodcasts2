@@ -8,7 +8,8 @@ struct AudiobookDetailView: View {
     @State private var isLoading: Bool = false
     @State private var errorMessage: String? = nil
     @State private var audiobookData: AudiobookData?
-    @State private var audioFileIno: String? = nil  // Store the file inode
+    @State private var audioFileIno: String? = nil
+    @State private var showPlayButton = false
     
     struct AudiobookData {
         let audioFiles: [AudioFile]
@@ -37,208 +38,53 @@ struct AudiobookDetailView: View {
     
     private let progressManager = PlaybackProgressManager.shared
     
+    private var hasProgress: Bool {
+        progressManager.loadProgress(for: audiobook.id) != nil
+    }
+    
+    private var audiobookStreamURL: URL? {
+        guard let base = URL(string: serverURL) else { return nil }
+        
+        if let ino = audioFileIno {
+            var components = URLComponents(url: base.appending(path: "/api/items/\(audiobook.id)/file/\(ino)"), resolvingAgainstBaseURL: false)
+            components?.queryItems = [URLQueryItem(name: "token", value: apiToken)]
+            return components?.url
+        }
+        
+        var components = URLComponents(url: base.appending(path: "/s/book/\(audiobook.id)"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "token", value: apiToken)]
+        return components?.url
+    }
+
     var body: some View {
         List {
-            // Audiobook header with cover art
             Section {
-                HStack(spacing: 16) {
-                    // Cover Art
-                    if let artworkURL = audiobookCoverURL {
-                        AsyncImage(url: artworkURL) { phase in
-                            switch phase {
-                            case .empty:
-                                ProgressView()
-                                    .frame(width: 140, height: 140)
-                            case .success(let image):
-                                image
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 140, height: 140)
-                                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                            case .failure:
-                                placeholderArtwork
-                            @unknown default:
-                                placeholderArtwork
-                            }
-                        }
-                    } else {
-                        placeholderArtwork
+                VStack(spacing: 20) {
+                    coverArtView
+                    
+                    titleView
+                    
+                    if let desc = audiobook.displayDescription, !desc.isEmpty {
+                        Text(desc)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(5)
                     }
                     
-                    // Audiobook Info
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(audiobook.displayTitle)
-                            .font(.title3)
-                            .fontWeight(.semibold)
-                            .lineLimit(3)
-                        
-                        if let author = audiobook.media?.metadata?.author {
-                            Text(author)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                        
-                        let tags = audiobook.displayTags
-                        if !tags.isEmpty {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 6) {
-                                    ForEach(tags, id: \.self) { tag in
-                                        Text(tag)
-                                            .font(.caption)
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 4)
-                                            .background(
-                                                RoundedRectangle(cornerRadius: 6)
-                                                    .fill(Color.green.opacity(0.15))
-                                            )
-                                            .foregroundStyle(.green)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    playButtonView
+                    
+                    progressView
                 }
-                .padding(.vertical, 8)
-                
-                // Description
-                if let desc = audiobook.displayDescription, !desc.isEmpty {
-                    Text(desc)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                
-                // Play entire audiobook button
-                if let streamURL = audiobookStreamURL {
-                    NavigationLink(destination: {
-                        let audiobookEpisode = ABSClient.Episode(
-                            id: audiobook.id,
-                            title: audiobook.displayTitle,
-                            description: audiobook.displayDescription,
-                            pubDate: nil,
-                            publishedAt: nil,
-                            enclosure: ABSClient.Episode.Enclosure(
-                                url: streamURL.absoluteString,
-                                type: "audio/mpeg",
-                                length: nil
-                            )
-                        )
-                        NowPlayingView(
-                            episode: audiobookEpisode,
-                            audioURL: streamURL,
-                            artworkURL: audiobookCoverURL,
-                            apiToken: apiToken
-                        )
-                    }) {
-                        HStack {
-                            Image(systemName: "play.fill")
-                            Text(hasProgress ? "Continue Audiobook" : "Play Audiobook")
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.blue)
-                        .foregroundStyle(.white)
-                        .cornerRadius(10)
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    HStack {
-                        if isLoading {
-                            ProgressView()
-                        }
-                        Image(systemName: "play.fill")
-                        Text("Loading...")
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.gray)
-                    .foregroundStyle(.white)
-                    .cornerRadius(10)
-                }
-                
-                // Progress indicator
-                if let progress = progressManager.loadProgress(for: audiobook.id), !progress.isCompleted {
-                    HStack {
-                        Image(systemName: "clock")
-                            .foregroundStyle(.secondary)
-                        Text("\(Int(progress.progressPercentage))% complete • \(progressManager.formatTime(progress.currentTime)) of \(progressManager.formatTime(progress.duration))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
             }
+
+            errorView
             
-            // Error
-            if let errorMessage {
-                Section(header: Text("Error")) {
-                    Text(errorMessage)
-                        .foregroundStyle(.red)
-                        .font(.subheadline)
-                }
-            }
+            chaptersView
             
-            // Loading
-            if isLoading {
-                Section {
-                    HStack {
-                        ProgressView()
-                        Text("Loading audiobook details…")
-                    }
-                }
-            }
-            
-            // Chapters/Audio Files section
-            if let audiobookData = audiobookData {
-                if let chapters = audiobookData.chapters, !chapters.isEmpty {
-                    Section(header: Text("Chapters (\(chapters.count))")) {
-                        ForEach(chapters) { chapter in
-                            Button {
-                                playFromChapter(chapter)
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(chapter.title)
-                                            .font(.body)
-                                            .foregroundStyle(.primary)
-                                        Text(progressManager.formatTime(chapter.start))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "play.circle")
-                                        .foregroundStyle(.blue)
-                                }
-                            }
-                        }
-                    }
-                } else if !audiobookData.audioFiles.isEmpty {
-                    Section(header: Text("Audio Files (\(audiobookData.audioFiles.count))")) {
-                        ForEach(audiobookData.audioFiles) { file in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(file.filename)
-                                    .font(.body)
-                                Text(progressManager.formatTime(file.duration))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Metadata section
-            Section(header: Text("Details")) {
-                if let author = audiobook.media?.metadata?.author {
-                    LabeledContent("Author", value: author)
-                }
-                
-                if let releaseDate = audiobook.media?.metadata?.releaseDate {
-                    LabeledContent("Release Date", value: releaseDate)
-                }
-                
-                if let addedAt = audiobook.media?.metadata?.addedAt {
-                    LabeledContent("Added", value: addedAt)
-                }
-            }
+            metadataView
         }
         .navigationTitle("Audiobook")
         .navigationBarTitleDisplayMode(.inline)
@@ -247,77 +93,174 @@ struct AudiobookDetailView: View {
         }
     }
     
+    private var coverArtView: some View {
+        Group {
+            if let artworkURL = audiobookCoverURL {
+                AsyncImage(url: artworkURL) { phase in
+                    if let image = phase.image {
+                        image
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 180, height: 180)
+                            .clipShape(RoundedRectangle(cornerRadius: 20))
+                            .shadow(radius: 10)
+                    } else if phase.error != nil {
+                        placeholderArtwork
+                    } else {
+                        ProgressView()
+                            .frame(width: 180, height: 180)
+                    }
+                }
+            } else {
+                placeholderArtwork
+            }
+        }
+    }
+    
+    private var titleView: some View {
+        VStack(spacing: 8) {
+            Text(audiobook.displayTitle)
+                .font(.title2)
+                .fontWeight(.bold)
+                .multilineTextAlignment(.center)
+            
+            if let author = audiobook.media?.metadata?.author {
+                Text("by \(author)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var playButtonView: some View {
+        if let streamURL = audiobookStreamURL, showPlayButton {
+            NavigationLink(destination: NowPlayingView(
+                episode: ABSClient.Episode(
+                    id: audiobook.id,
+                    title: audiobook.displayTitle,
+                    description: audiobook.displayDescription,
+                    pubDate: nil,
+                    publishedAt: nil,
+                    enclosure: ABSClient.Episode.Enclosure(
+                        url: streamURL.absoluteString,
+                        type: "audio/mpeg",
+                        length: nil
+                    )
+                ),
+                audioURL: streamURL,
+                artworkURL: audiobookCoverURL,
+                apiToken: apiToken
+            )) {
+                HStack {
+                    Image(systemName: "play.fill")
+                    Text(hasProgress ? "Continue Listening" : "Start Listening")
+                        .fontWeight(.semibold)
+                }
+                .frame(maxWidth: .infinity)
+                .padding()
+                .background(Color.green)
+                .foregroundStyle(.white)
+                .cornerRadius(12)
+            }
+            .buttonStyle(.plain)
+        } else if isLoading {
+            HStack {
+                ProgressView()
+                Text("Loading...")
+            }
+            .frame(maxWidth: .infinity)
+            .padding()
+            .background(Color.gray)
+            .foregroundStyle(.white)
+            .cornerRadius(12)
+        }
+    }
+    
+    @ViewBuilder
+    private var progressView: some View {
+        if let progress = progressManager.loadProgress(for: audiobook.id), !progress.isCompleted {
+            HStack {
+                Image(systemName: "clock.fill")
+                    .foregroundStyle(.green)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(Int(progress.progressPercentage))% complete")
+                        .font(.caption)
+                    Text("\(progressManager.formatTime(progress.currentTime)) of \(progressManager.formatTime(progress.duration))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(12)
+            .background(Color.green.opacity(0.1))
+            .cornerRadius(8)
+        }
+    }
+    
+    @ViewBuilder
+    private var errorView: some View {
+        if let errorMessage {
+            Section(header: Text("Error")) {
+                Text(errorMessage)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var chaptersView: some View {
+        if let chapters = audiobookData?.chapters, !chapters.isEmpty {
+            Section(header: Text("Chapters (\(chapters.count))")) {
+                ForEach(chapters) { chapter in
+                    Button {
+                        // TODO: Play from chapter
+                    } label: {
+                        HStack {
+                            Text("\(chapter.id + 1)")
+                                .font(.caption)
+                                .fontWeight(.bold)
+                                .frame(width: 30, height: 30)
+                                .background(Circle().fill(Color.green.opacity(0.2)))
+                                .foregroundStyle(.green)
+                            
+                            VStack(alignment: .leading) {
+                                Text(chapter.title)
+                                    .font(.body)
+                                Text(progressManager.formatTime(chapter.start))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            Image(systemName: "play.circle")
+                                .foregroundStyle(.green)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var metadataView: some View {
+        Section(header: Text("Details")) {
+            if let author = audiobook.media?.metadata?.author {
+                LabeledContent("Author", value: author)
+            }
+        }
+    }
+    
     private var placeholderArtwork: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 20)
                 .fill(Color.gray.opacity(0.2))
-                .frame(width: 140, height: 140)
+                .frame(width: 180, height: 180)
             Image(systemName: "book.closed")
-                .font(.system(size: 56))
+                .font(.system(size: 72))
                 .foregroundStyle(.gray)
         }
-    }
-    
-    // MARK: - Computed Properties
-    
-    private var hasProgress: Bool {
-        progressManager.loadProgress(for: audiobook.id) != nil
-    }
-    
-    private var audiobookStreamURL: URL? {
-        guard let base = URL(string: serverURL) else { return nil }
-        
-        // If we have the file ino from API, use it
-        if let ino = audioFileIno {
-            var components = URLComponents(url: base.appending(path: "/api/items/\(audiobook.id)/file/\(ino)"), resolvingAgainstBaseURL: false)
-            components?.queryItems = [
-                URLQueryItem(name: "token", value: apiToken)
-            ]
-            let streamURL = components?.url
-            print("🎵 Audiobook stream URL: \(streamURL?.absoluteString ?? "nil")")
-            return streamURL
-        }
-        
-        // Fallback: try the /s/book/ endpoint
-        var components = URLComponents(url: base.appending(path: "/s/book/\(audiobook.id)"), resolvingAgainstBaseURL: false)
-        components?.queryItems = [
-            URLQueryItem(name: "token", value: apiToken)
-        ]
-        let streamURL = components?.url
-        print("🎵 Audiobook stream URL (fallback): \(streamURL?.absoluteString ?? "nil")")
-        return streamURL
-    }
-    
-    // MARK: - Actions
-    
-    private func playEntireAudiobook() {
-        guard let streamURL = audiobookStreamURL else {
-            errorMessage = "Cannot create audiobook stream URL"
-            return
-        }
-        
-        // Create a pseudo-episode for the audiobook to work with NowPlayingView
-        let audiobookEpisode = ABSClient.Episode(
-            id: audiobook.id,
-            title: audiobook.displayTitle,
-            description: audiobook.displayDescription,
-            pubDate: nil,
-            publishedAt: nil,
-            enclosure: ABSClient.Episode.Enclosure(
-                url: streamURL.absoluteString,
-                type: "audio/mpeg",
-                length: nil
-            )
-        )
-        
-        // Navigate to player - this will be handled by NavigationLink
-        print("Playing audiobook: \(audiobook.displayTitle)")
-    }
-    
-    private func playFromChapter(_ chapter: AudiobookData.Chapter) {
-        // TODO: Implement chapter-specific playback
-        // This would require modifying NowPlayingView to accept a start time
-        print("Play from chapter: \(chapter.title) at \(chapter.start)s")
     }
     
     private func loadAudiobookDetails() {
@@ -326,17 +269,13 @@ struct AudiobookDetailView: View {
             return
         }
         
-        let client = ABSClient(serverURL: url, apiToken: apiToken)
         isLoading = true
         errorMessage = nil
         
         Task {
             do {
-                // Fetch the full audiobook details with expanded data
                 var components = URLComponents(url: url.appending(path: "/api/items/\(audiobook.id)"), resolvingAgainstBaseURL: false)
-                components?.queryItems = [
-                    URLQueryItem(name: "expanded", value: "1")
-                ]
+                components?.queryItems = [URLQueryItem(name: "expanded", value: "1")]
                 
                 guard let detailURL = components?.url else {
                     throw ABSClient.ABSError.other(URLError(.badURL))
@@ -347,7 +286,6 @@ struct AudiobookDetailView: View {
                 
                 let (data, _) = try await URLSession.shared.data(for: request)
                 
-                // Parse the response to extract audio file info
                 if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let media = json["media"] as? [String: Any],
                    let audioFiles = media["audioFiles"] as? [[String: Any]],
@@ -356,9 +294,7 @@ struct AudiobookDetailView: View {
                     
                     await MainActor.run {
                         self.audioFileIno = ino
-                        print("✅ Found audio file ino: \(ino)")
                         
-                        // Extract chapters if available
                         if let chapters = media["chapters"] as? [[String: Any]] {
                             var chapterList: [AudiobookData.Chapter] = []
                             for (index, chapterDict) in chapters.enumerated() {
@@ -375,18 +311,16 @@ struct AudiobookDetailView: View {
                             }
                             
                             if !chapterList.isEmpty {
-                                self.audiobookData = AudiobookData(
-                                    audioFiles: [],
-                                    chapters: chapterList
-                                )
-                                print("✅ Found \(chapterList.count) chapters")
+                                self.audiobookData = AudiobookData(audioFiles: [], chapters: chapterList)
                             }
                         }
                         
+                        self.showPlayButton = true
                         self.isLoading = false
                     }
                 } else {
                     await MainActor.run {
+                        self.showPlayButton = true
                         self.isLoading = false
                     }
                 }
