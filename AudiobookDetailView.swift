@@ -39,26 +39,31 @@ struct AudiobookDetailView: View {
         return base.appending(path: "/api/items/\(audiobook.id)/cover")
     }
     
+    /// Correct streaming URLs for Audiobookshelf:
+    /// - /s/item/<id>/file/<ino>?token=...
+    /// - /s/item/<id>?token=... (fallback)
     private var audiobookStreamURL: URL? {
         guard let base = URL(string: serverURL) else { return nil }
-        
+
         if let ino = audioFileIno {
             var components = URLComponents(
-                url: base.appending(path: "/s/book/\(audiobook.id)/file/\(ino)"),
+                url: base.appending(path: "/s/item/\(audiobook.id)/file/\(ino)"),
                 resolvingAgainstBaseURL: false
             )
             components?.queryItems = [URLQueryItem(name: "token", value: apiToken)]
             return components?.url
         }
-        
+
         var components = URLComponents(
-            url: base.appending(path: "/s/book/\(audiobook.id)"),
+            url: base.appending(path: "/s/item/\(audiobook.id)"),
             resolvingAgainstBaseURL: false
         )
         components?.queryItems = [URLQueryItem(name: "token", value: apiToken)]
         return components?.url
     }
 
+    // MARK: - Body
+    
     var body: some View {
         List {
             Section {
@@ -205,11 +210,11 @@ struct AudiobookDetailView: View {
         progressManager.loadProgress(for: audiobook.id) != nil
     }
     
-    // 👇 FIXED: ViewBuilder + final else -> EmptyView
     @ViewBuilder
     private var playButtonView: some View {
         if let streamURL = audiobookStreamURL, showPlayButton {
             Button {
+                // Wrap audiobook as an Episode so NowPlayingView can handle it
                 let episode = ABSClient.Episode(
                     id: audiobook.id,
                     title: audiobook.displayTitle,
@@ -384,6 +389,7 @@ struct AudiobookDetailView: View {
                         errorMessage = error.localizedDescription
                     }
                     isLoading = false
+                    showPlayButton = true   // still allow streaming via /s/item/<id>
                 }
             }
         }

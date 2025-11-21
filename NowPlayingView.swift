@@ -8,9 +8,11 @@ struct NowPlayingView: View {
     let episode: ABSClient.Episode
     let audioURL: URL
     let artworkURL: URL?
-    let apiToken: String?   // reserved for future header-based auth
+    let apiToken: String?   // currently unused
 
     @EnvironmentObject var playbackSettings: PlaybackSettingsViewModel
+    @EnvironmentObject var playerManager: PlayerManager
+    @Environment(\.dismiss) private var dismiss
 
     @State private var player: AVPlayer?
     @State private var isPlaying = false
@@ -24,188 +26,26 @@ struct NowPlayingView: View {
     @State private var savedProgress: PlaybackProgressManager.Progress?
     @State private var showResumeAlert = false
 
-    private var speeds: [Float] { playbackSettings.settings.allowedSpeeds }
     private let progressManager = PlaybackProgressManager.shared
+
+    private var speeds: [Float] {
+        playbackSettings.settings.allowedSpeeds
+    }
+
+    // MARK: - Body
 
     var body: some View {
         ScrollView {
             VStack(spacing: 28) {
-
-                // Artwork
-                ZStack {
-                    if let artworkImage {
-                        Image(uiImage: artworkImage)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: 280, maxHeight: 280)
-                            .cornerRadius(24)
-                            .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 12)
-                    } else if let url = artworkURL {
-                        AsyncImage(url: url) { phase in
-                            switch phase {
-                            case .empty:
-                                placeholderArtwork.overlay(ProgressView())
-                            case .success(let image):
-                                image
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(maxWidth: 280, maxHeight: 280)
-                                    .cornerRadius(24)
-                                    .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 12)
-                            case .failure:
-                                placeholderArtwork
-                            @unknown default:
-                                placeholderArtwork
-                            }
-                        }
-                    } else {
-                        placeholderArtwork
-                    }
-                }
-                .padding(.top, 40)
-
-                // Title + date
-                VStack(spacing: 8) {
-                    Text(episode.title)
-                        .font(.title2.weight(.bold))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-
-                    if let date = episode.bestDate {
-                        Text(date.formatted(date: .abbreviated, time: .shortened))
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                // Progress slider
-                VStack(spacing: 8) {
-                    Slider(
-                        value: Binding(
-                            get: { currentTime },
-                            set: { newValue in
-                                currentTime = newValue
-                                seek(to: newValue)
-                            }),
-                        in: 0...max(duration, 1)
-                    )
-                    .tint(.blue)
-
-                    HStack {
-                        Text(formatTime(currentTime))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-
-                        Spacer()
-
-                        Text("-\(formatTime(max(duration - currentTime, 0)))")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.horizontal)
-
-                // Transport controls
-                HStack(spacing: 50) {
-                    Button {
-                        skip(by: -Double(playbackSettings.settings.skipBackSeconds))
-                    } label: {
-                        ZStack {
-                            Circle()
-                                .fill(Color.gray.opacity(0.12))
-                                .frame(width: 60, height: 60)
-                            // Icon fixed at 15s, behavior uses custom value
-                            Image(systemName: "gobackward.15")
-                                .font(.title2)
-                        }
-                    }
-                    .buttonStyle(ScaleButtonStyle())
-
-                    Button {
-                        togglePlayback()
-                    } label: {
-                        ZStack {
-                            Circle()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [Color.blue, Color.purple],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                                .frame(width: 80, height: 80)
-                                .shadow(color: .blue.opacity(0.6), radius: 18, x: 0, y: 12)
-
-                            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                                .font(.system(size: 32, weight: .bold))
-                                .foregroundColor(.white)
-                        }
-                    }
-                    .buttonStyle(ScaleButtonStyle())
-
-                    Button {
-                        skip(by: Double(playbackSettings.settings.skipForwardSeconds))
-                    } label: {
-                        ZStack {
-                            Circle()
-                                .fill(Color.gray.opacity(0.12))
-                                .frame(width: 60, height: 60)
-                            // Icon fixed at 30s, behavior uses custom value
-                            Image(systemName: "goforward.30")
-                                .font(.title2)
-                        }
-                    }
-                    .buttonStyle(ScaleButtonStyle())
-                }
-                .padding(.vertical, 8)
-
-                // Speed buttons
-                VStack(spacing: 10) {
-                    HStack {
-                        Image(systemName: "gauge.medium")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text("Playback Speed")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text(String(format: "%.2gx", playbackSpeed))
-                            .font(.caption.weight(.semibold))
-                    }
-                    .padding(.horizontal)
-
-                    HStack(spacing: 10) {
-                        ForEach(speeds, id: \.self) { speed in
-                            Button {
-                                setSpeed(speed)
-                            } label: {
-                                Text(String(format: "%.2gx", speed))
-                                    .font(.subheadline.weight(.medium))
-                                    .padding(.vertical, 8)
-                                    .padding(.horizontal, 12)
-                                    .background(
-                                        Group {
-                                            if playbackSpeed == speed {
-                                                LinearGradient(
-                                                    colors: [Color.blue, Color.purple],
-                                                    startPoint: .leading,
-                                                    endPoint: .trailing
-                                                )
-                                                .clipShape(Capsule())
-                                            } else {
-                                                Capsule()
-                                                    .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                                            }
-                                        }
-                                    )
-                                    .foregroundColor(playbackSpeed == speed ? .white : .primary)
-                            }
-                        }
-                    }
-                }
-                .padding(.bottom, 24)
+                artworkSection
+                titleSection
+                sliderSection
+                controlsSection
+                speedSection
             }
             .padding(.horizontal)
+            .padding(.top, 32)
+            .padding(.bottom, 24)
         }
         .background(
             LinearGradient(
@@ -227,7 +67,7 @@ struct NowPlayingView: View {
                 progressManager.clearProgress(for: episode.id)
                 seek(to: 0)
             }
-            Button("Cancel", role: .cancel) {}
+            Button("Cancel", role: .cancel) { }
         } message: {
             if let progress = savedProgress {
                 Text("Resume from \(progressManager.formatTime(progress.currentTime))?")
@@ -245,9 +85,197 @@ struct NowPlayingView: View {
             saveCurrentProgress()
             cleanupPlayer()
         }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {   // ✅
+                Button {
+                    player?.pause()
+                    saveCurrentProgress()
+                    cleanupPlayer()
+                    playerManager.stop()
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+            }
+        }
     }
 
-    // MARK: - Artwork placeholder
+    // MARK: - Sections
+
+    private var artworkSection: some View {
+        ZStack {
+            if let image = artworkImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 280, maxHeight: 280)
+                    .cornerRadius(24)
+                    .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 12)
+            } else if let url = artworkURL {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .empty:
+                        placeholderArtwork.overlay(ProgressView())
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: 280, maxHeight: 280)
+                            .cornerRadius(24)
+                            .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 12)
+                    case .failure:
+                        placeholderArtwork
+                    @unknown default:
+                        placeholderArtwork
+                    }
+                }
+            } else {
+                placeholderArtwork
+            }
+        }
+    }
+
+    private var titleSection: some View {
+        VStack(spacing: 8) {
+            Text(episode.title)
+                .font(.title2.weight(.bold))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+
+            if let date = episode.bestDate {
+                Text(date.formatted(date: .abbreviated, time: .shortened))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var sliderSection: some View {
+        VStack(spacing: 8) {
+            Slider(
+                value: Binding(
+                    get: { currentTime },
+                    set: { newValue in
+                        currentTime = newValue
+                        seek(to: newValue)
+                    }
+                ),
+                in: 0...max(duration, 1)
+            )
+            .tint(.blue)
+
+            HStack {
+                Text(formatTime(currentTime))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text("-\(formatTime(max(duration - currentTime, 0)))")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private var controlsSection: some View {
+        HStack(spacing: 50) {
+            Button {
+                skip(by: -Double(playbackSettings.settings.skipBackSeconds))
+            } label: {
+                Circle()
+                    .fill(Color.gray.opacity(0.12))
+                    .frame(width: 60, height: 60)
+                    .overlay(
+                        Image(systemName: "gobackward.15")
+                            .font(.title2)
+                    )
+            }
+            .buttonStyle(ScaleButtonStyle())
+
+            Button {
+                togglePlayback()
+            } label: {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.blue, Color.purple],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 80, height: 80)
+                    .shadow(color: .blue.opacity(0.6), radius: 18, x: 0, y: 12)
+                    .overlay(
+                        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 32, weight: .bold))
+                            .foregroundColor(.white)
+                    )
+            }
+            .buttonStyle(ScaleButtonStyle())
+
+            Button {
+                skip(by: Double(playbackSettings.settings.skipForwardSeconds))
+            } label: {
+                Circle()
+                    .fill(Color.gray.opacity(0.12))
+                    .frame(width: 60, height: 60)
+                    .overlay(
+                        Image(systemName: "goforward.30")
+                            .font(.title2)
+                    )
+            }
+            .buttonStyle(ScaleButtonStyle())
+        }
+        .padding(.vertical, 8)
+    }
+
+    private var speedSection: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Image(systemName: "gauge.medium")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Playback Speed")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(String(format: "%.2gx", playbackSpeed))
+                    .font(.caption.weight(.semibold))
+            }
+            .padding(.horizontal)
+
+            HStack(spacing: 10) {
+                ForEach(speeds, id: \.self) { speed in
+                    Button {
+                        setSpeed(speed)
+                    } label: {
+                        Text(String(format: "%.2gx", speed))
+                            .font(.subheadline.weight(.medium))
+                            .padding(.vertical, 8)
+                            .padding(.horizontal, 12)
+                            .background(
+                                Group {
+                                    if playbackSpeed == speed {
+                                        LinearGradient(
+                                            colors: [Color.blue, Color.purple],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
+                                        .clipShape(Capsule())
+                                    } else {
+                                        Capsule()
+                                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                                    }
+                                }
+                            )
+                            .foregroundColor(playbackSpeed == speed ? .white : .primary)
+                    }
+                }
+            }
+        }
+    }
 
     private var placeholderArtwork: some View {
         ZStack {
@@ -260,7 +288,7 @@ struct NowPlayingView: View {
         }
     }
 
-    // MARK: - Audio session
+    // MARK: - Audio Session & Player
 
     private func setupAudioSession() {
         do {
@@ -271,8 +299,6 @@ struct NowPlayingView: View {
             print("⚠️ Audio session error: \(error)")
         }
     }
-
-    // MARK: - Player
 
     private func setupPlayer() {
         let player = AVPlayer(url: audioURL)
@@ -309,7 +335,6 @@ struct NowPlayingView: View {
             self.currentTime = time.seconds
             self.updateNowPlayingInfo()
 
-            // autosave every ~5 seconds
             if Int(self.currentTime) % 5 == 0 {
                 self.saveCurrentProgress()
             }
@@ -318,7 +343,7 @@ struct NowPlayingView: View {
     }
 
     private func togglePlayback() {
-        guard let player else { return }
+        guard let player = player else { return }
         if isPlaying {
             player.pause()
             saveCurrentProgress()
@@ -331,7 +356,7 @@ struct NowPlayingView: View {
     }
 
     private func seek(to time: Double) {
-        guard let player else { return }
+        guard let player = player else { return }
         let clamped = max(0, min(time, duration))
         let cm = CMTime(seconds: clamped, preferredTimescale: 600)
         player.seek(to: cm) { _ in
@@ -341,8 +366,7 @@ struct NowPlayingView: View {
     }
 
     private func skip(by delta: Double) {
-        let newTime = currentTime + delta
-        seek(to: newTime)
+        seek(to: currentTime + delta)
     }
 
     private func setSpeed(_ speed: Float) {
@@ -354,7 +378,7 @@ struct NowPlayingView: View {
     }
 
     private func cleanupPlayer() {
-        if let player, let token = timeObserverToken {
+        if let player = player, let token = timeObserverToken {
             player.removeTimeObserver(token)
         }
         timeObserverToken = nil
@@ -362,40 +386,32 @@ struct NowPlayingView: View {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
-    // MARK: - Remote commands
+    // MARK: - Remote Commands
 
     private func setupRemoteCommands() {
         let commandCenter = MPRemoteCommandCenter.shared()
 
         commandCenter.playCommand.isEnabled = true
         commandCenter.playCommand.addTarget { _ in
-            if let player = self.player, !self.isPlaying {
-                player.play()
-                player.rate = self.playbackSpeed
-                self.isPlaying = true
-                self.updateNowPlayingInfo()
+            if !self.isPlaying {
+                self.togglePlayback()
             }
             return .success
         }
 
         commandCenter.pauseCommand.isEnabled = true
         commandCenter.pauseCommand.addTarget { _ in
-            if let player = self.player, self.isPlaying {
-                player.pause()
-                self.isPlaying = false
-                self.updateNowPlayingInfo()
-                self.saveCurrentProgress()
+            if self.isPlaying {
+                self.togglePlayback()
             }
             return .success
         }
-
 
         commandCenter.togglePlayPauseCommand.isEnabled = true
         commandCenter.togglePlayPauseCommand.addTarget { _ in
             self.togglePlayback()
             return .success
         }
-
 
         commandCenter.skipForwardCommand.isEnabled = true
         commandCenter.skipForwardCommand.preferredIntervals =
@@ -405,7 +421,6 @@ struct NowPlayingView: View {
             return .success
         }
 
-
         commandCenter.skipBackwardCommand.isEnabled = true
         commandCenter.skipBackwardCommand.preferredIntervals =
             [NSNumber(value: playbackSettings.settings.skipBackSeconds)]
@@ -413,10 +428,9 @@ struct NowPlayingView: View {
             self.skip(by: -Double(self.playbackSettings.settings.skipBackSeconds))
             return .success
         }
-
     }
 
-    // MARK: - Now Playing info
+    // MARK: - Now Playing Info & Artwork
 
     private func updateNowPlayingInfo() {
         var info: [String: Any] = [
@@ -430,20 +444,18 @@ struct NowPlayingView: View {
             info[MPMediaItemPropertyPlaybackDuration] = duration
         }
 
-        if let artworkImage {
-            let artwork = MPMediaItemArtwork(boundsSize: artworkImage.size) { _ in artworkImage }
+        if let image = artworkImage {
+            let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
             info[MPMediaItemPropertyArtwork] = artwork
         }
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
-    // MARK: - Artwork loading
-
     private func loadArtwork() {
         guard artworkImage == nil, let url = artworkURL else { return }
         URLSession.shared.dataTask(with: url) { data, _, _ in
-            guard let data, let image = UIImage(data: data) else { return }
+            guard let data = data, let image = UIImage(data: data) else { return }
             DispatchQueue.main.async {
                 self.artworkImage = image
                 self.updateNowPlayingInfo()
@@ -478,21 +490,16 @@ struct NowPlayingView: View {
     }
 }
 
-// MARK: - Scale button style
+// MARK: - Button Style
 
 struct ScaleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.92 : 1.0)
-            .animation(.spring(response: 0.2, dampingFraction: 0.6), value: configuration.isPressed)
+            .animation(
+                .spring(response: 0.2, dampingFraction: 0.6),
+                value: configuration.isPressed
+            )
     }
 }
-
-
-
-
-
-
-
-
 
