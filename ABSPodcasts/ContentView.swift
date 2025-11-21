@@ -4,9 +4,18 @@ struct ContentView: View {
     @EnvironmentObject var playerManager: PlayerManager
     @EnvironmentObject var playbackSettings: PlaybackSettingsViewModel
 
+    // MARK: - UserDefaults keys
+
+    private let serverURLKey = "ABS_ServerURL"
+    private let apiTokenKey  = "ABS_APIToken"
+
+    // MARK: - State
+
     @State private var serverURL: String = ""
-    @State private var apiToken: String = ""
+    @State private var apiToken: String  = ""
     @State private var isConnected: Bool = false
+
+    // MARK: - Body
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -27,6 +36,7 @@ struct ContentView: View {
                     .environmentObject(playbackSettings)
             }
         }
+        .onAppear(perform: loadSavedConnection)
     }
 
     // MARK: - Root navigation
@@ -35,10 +45,12 @@ struct ContentView: View {
         NavigationStack {
             Group {
                 if isConnected {
-                    // After connecting, show list of libraries
-                    LibrariesView(serverURL: serverURL, apiToken: apiToken)
+                    LibrariesView(
+                        serverURL: serverURL,
+                        apiToken: apiToken,
+                        onLogout: handleLogout          // 👈 logout / change server
+                    )
                 } else {
-                    // Initial login form
                     loginForm
                 }
             }
@@ -70,19 +82,55 @@ struct ContentView: View {
         .navigationTitle("Audiobookshelf Server")
     }
 
+    // MARK: - Actions
+
+    /// Called when user taps "Connect"
     private func connectToServer() {
-        // Simple validation – you already know the values work from your old app
         guard URL(string: serverURL) != nil, !apiToken.isEmpty else { return }
+
+        // Save to UserDefaults so we remember next launch
+        let defaults = UserDefaults.standard
+        defaults.set(serverURL, forKey: serverURLKey)
+        defaults.set(apiToken, forKey: apiTokenKey)
+
         isConnected = true
+    }
+
+    /// Load saved connection (if any) on app startup.
+    private func loadSavedConnection() {
+        let defaults = UserDefaults.standard
+
+        guard
+            let savedURL   = defaults.string(forKey: serverURLKey),
+            let savedToken = defaults.string(forKey: apiTokenKey),
+            !savedURL.isEmpty,
+            !savedToken.isEmpty,
+            URL(string: savedURL) != nil
+        else {
+            return
+        }
+
+        serverURL   = savedURL
+        apiToken    = savedToken
+        isConnected = true
+    }
+
+    /// Clear saved credentials and go back to login form.
+    private func handleLogout() {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: serverURLKey)
+        defaults.removeObject(forKey: apiTokenKey)
+
+        serverURL   = ""
+        apiToken    = ""
+        isConnected = false
     }
 }
 
-// MARK: - Libraries list
-
-/// Shows the list of libraries from Audiobookshelf and navigates into `LibraryDetailView`.
 struct LibrariesView: View {
     let serverURL: String
     let apiToken: String
+    let onLogout: () -> Void      // 👈 callback to change server / log out
 
     @State private var libraries: [ABSClient.Library] = []
     @State private var isLoading = false
@@ -96,12 +144,14 @@ struct LibrariesView: View {
                     ProgressView("Loading libraries…")
                     Spacer()
                 }
+                .listRowBackground(Color.clear)
             }
 
             if let errorMessage {
                 Text(errorMessage)
                     .foregroundColor(.red)
                     .font(.subheadline)
+                    .listRowBackground(Color.clear)
             }
 
             ForEach(libraries) { library in
@@ -113,10 +163,17 @@ struct LibrariesView: View {
                     )
                 ) {
                     HStack(spacing: 12) {
-                        Image(systemName: iconName(for: library))
-                            .font(.title2)
-                            .frame(width: 32, height: 32)
-                            .foregroundStyle(.primary)
+
+                        // Colored icon circle
+                        ZStack {
+                            Circle()
+                                .fill(iconColor(for: library).opacity(0.18))
+                                .frame(width: 40, height: 40)
+
+                            Image(systemName: iconName(for: library))
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(iconColor(for: library))
+                        }
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text(library.name)
@@ -133,20 +190,37 @@ struct LibrariesView: View {
                             .font(.footnote)
                             .foregroundStyle(.tertiary)
                     }
-                    .padding(.vertical, 6)
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(Color(.secondarySystemBackground))
+                    )
+                }
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            }
+        }
+        .listStyle(.plain)
+        .navigationTitle("Libraries")
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(role: .destructive) {
+                    onLogout()          // 👈 clears saved creds & returns to login
+                } label: {
+                    Text("Change Server")
                 }
             }
         }
-        .listStyle(.insetGrouped)
-        .navigationTitle("Libraries")
         .task {
             await loadLibraries()
         }
+        .background(Color(.systemGroupedBackground))
     }
 
-    // MARK: - Helpers
+    // MARK: - Icon + Color helpers
 
-    /// Map Audiobookshelf's library.icon / mediaType to a nice SF Symbol.
+    /// Map Audiobookshelf's icon/mediaType to an SF Symbol.
     private func iconName(for library: ABSClient.Library) -> String {
         let icon = library.icon?.lowercased() ?? ""
         let type = library.mediaType.lowercased()
@@ -165,6 +239,20 @@ struct LibrariesView: View {
 
         return "square.stack"
     }
+
+    /// Choose a color per library type.
+    private func iconColor(for library: ABSClient.Library) -> Color {
+        let type = library.mediaType.lowercased()
+        if type.contains("book") {
+            return .purple
+        } else if type.contains("podcast") {
+            return .orange
+        } else {
+            return .blue
+        }
+    }
+
+    // MARK: - Networking
 
     private func loadLibraries() async {
         guard let baseURL = URL(string: serverURL) else { return }
@@ -190,4 +278,3 @@ struct LibrariesView: View {
         }
     }
 }
-
