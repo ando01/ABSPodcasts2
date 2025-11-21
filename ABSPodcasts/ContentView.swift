@@ -1,169 +1,159 @@
 import SwiftUI
 
 struct ContentView: View {
+    @EnvironmentObject var playerManager: PlayerManager
+    @EnvironmentObject var playbackSettings: PlaybackSettingsViewModel
+
     @State private var serverURL: String = ""
     @State private var apiToken: String = ""
-    @State private var statusMessage: String = "Not connected"
-    @State private var isConnecting: Bool = false
-    @State private var libraries: [ABSClient.Library] = []
-    @State private var selectedLibraryId: String? = nil
 
-    // UserDefaults keys
-    private let keyServerURL = "ABS_ServerURL"
-    private let keyApiToken = "ABS_ApiToken"
-    private let keySelectedLibraryId = "ABS_SelectedLibraryId"
+    @State private var libraries: [ABSClient.Library] = []
+    @State private var isLoadingLibraries: Bool = false
+    @State private var librariesErrorMessage: String?
 
     var body: some View {
-        NavigationStack {
-            Form {
-                // Server + token inputs
-                Section(header: Text("Audiobookshelf Server")) {
-                    TextField("Server URL (e.g. https://abs.example.com)", text: $serverURL)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled(true)
+        ZStack(alignment: .bottom) {
 
-                    TextField("API Token", text: $apiToken)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled(true)
-                }
+            // MAIN APP UI
+            NavigationStack {
+                Form {
+                    // Server + token inputs
+                    Section(header: Text("Audiobookshelf Server")) {
+                        TextField("Server URL (e.g. https://abs.example.com)", text: $serverURL)
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
 
-                // Connect button
-                Section {
-                    Button(action: connectToServer) {
-                        if isConnecting {
-                            ProgressView()
-                                .frame(maxWidth: .infinity, alignment: .center)
-                        } else {
-                            Text("Connect & Load Libraries")
-                                .frame(maxWidth: .infinity, alignment: .center)
-                        }
+                        TextField("API Token", text: $apiToken)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
                     }
-                    .disabled(serverURL.isEmpty || apiToken.isEmpty || isConnecting)
-                }
 
-                // Status
-                Section(header: Text("Status")) {
-                    Text(statusMessage)
-                        .font(.subheadline)
-                }
-
-                // Libraries list
-                if !libraries.isEmpty {
-                    Section(header: Text("Libraries")) {
-                        ForEach(libraries) { library in
-                            NavigationLink(
-                                destination: LibraryDetailView(
-                                    library: library,
-                                    serverURL: serverURL,
-                                    apiToken: apiToken
-                                )
-                            ) {
+                    // Connect / load libraries
+                    Section {
+                        Button {
+                            Task {
+                                await loadLibraries()
+                            }
+                        } label: {
+                            if isLoadingLibraries {
                                 HStack {
-                                    VStack(alignment: .leading) {
-                                        Text(library.name)
-                                            .font(.body)
-                                        Text(library.mediaType.capitalized)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    if library.id == selectedLibraryId {
-                                        Text("Last used")
-                                            .font(.caption2)
-                                            .padding(4)
-                                            .background(
-                                                Capsule().strokeBorder(lineWidth: 1)
-                                            )
+                                    ProgressView()
+                                    Text("Connecting…")
+                                }
+                            } else {
+                                Text("Connect & Load Libraries")
+                            }
+                        }
+                        .disabled(serverURL.isEmpty || apiToken.isEmpty)
+                    }
+
+                    // Libraries list
+                    if !libraries.isEmpty {
+                        Section(header: Text("Libraries")) {
+                            ForEach(libraries) { library in
+                                NavigationLink {
+                                    LibraryDetailView(
+                                        library: library,
+                                        serverURL: serverURL,
+                                        apiToken: apiToken
+                                    )
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        // simple icon based on media type
+                                        Image(systemName: library.mediaType.lowercased().contains("podcast") ? "dot.radiowaves.left.and.right" : "book")
+                                            .foregroundStyle(.blue)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(library.name)
+                                                .font(.subheadline)
+                                                .fontWeight(.medium)
+                                            Text(library.mediaType.capitalized)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
                                     }
                                 }
                             }
-                            // Remember last selected library when tapped
-                            .simultaneousGesture(
-                                TapGesture().onEnded {
-                                    selectedLibraryId = library.id
-                                    saveSettings()
-                                }
-                            )
+                        }
+                    }
+
+                    // Error message
+                    if let msg = librariesErrorMessage {
+                        Section {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.yellow)
+                                Text(msg)
+                                    .font(.subheadline)
+                            }
                         }
                     }
                 }
+                .navigationTitle("ABS Podcasts")
             }
-            .navigationTitle("ABS Podcasts")
-            .onAppear {
-                loadSettings()
+
+            // FLOATING MINI PLAYER
+            if playerManager.isActive && !playerManager.isPresented {
+                MiniPlayerView()
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        // FULL NOW PLAYING SHEET
+        .sheet(isPresented: $playerManager.isPresented) {
+            if let episode = playerManager.currentEpisode,
+               let url = playerManager.audioURL {
+                NavigationStack {
+                    NowPlayingView(
+                        episode: episode,
+                        audioURL: url,
+                        artworkURL: playerManager.artworkURL,
+                        apiToken: nil
+                    )
+                    .environmentObject(playbackSettings)
+                }
+            } else {
+                Text("No active item")
             }
         }
     }
 
-    // MARK: - Actions
+    // MARK: - Networking
 
-    private func connectToServer() {
-        guard let url = URL(string: serverURL) else {
-            statusMessage = "Invalid server URL."
+    private func loadLibraries() async {
+        guard let url = URL(string: serverURL), !apiToken.isEmpty else {
+            await MainActor.run {
+                librariesErrorMessage = "Please enter a valid server URL and API token."
+            }
             return
         }
 
+        await MainActor.run {
+            isLoadingLibraries = true
+            librariesErrorMessage = nil
+        }
+
         let client = ABSClient(serverURL: url, apiToken: apiToken)
-        statusMessage = "Connecting and loading libraries..."
-        isConnecting = true
-        libraries = []
 
-        // Save URL/token even before success so they persist across launches
-        saveSettings()
-
-        Task {
-            do {
-                let libs = try await client.fetchLibraries()
-                await MainActor.run {
-                    self.libraries = libs
-                    self.statusMessage = "Found \(libs.count) libraries."
-
-                    // If no saved library yet, default to the first one
-                    if selectedLibraryId == nil, let first = libs.first {
-                        selectedLibraryId = first.id
-                    }
-
-                    self.isConnecting = false
-                    saveSettings()
-                }
-            } catch {
-                await MainActor.run {
-                    if let absErr = error as? ABSClient.ABSError {
-                        statusMessage = absErr.localizedDescription
-                    } else {
-                        statusMessage = error.localizedDescription
-                    }
-                    isConnecting = false
-                }
+        do {
+            let libs = try await client.fetchLibraries()
+            await MainActor.run {
+                self.libraries = libs
+                self.isLoadingLibraries = false
+            }
+        } catch {
+            await MainActor.run {
+                self.isLoadingLibraries = false
+                self.librariesErrorMessage = error.localizedDescription
             }
         }
-    }
-
-    // MARK: - Persistence
-
-    private func loadSettings() {
-        let defaults = UserDefaults.standard
-        if let savedURL = defaults.string(forKey: keyServerURL) {
-            serverURL = savedURL
-        }
-        if let savedToken = defaults.string(forKey: keyApiToken) {
-            apiToken = savedToken
-        }
-        if let savedLibId = defaults.string(forKey: keySelectedLibraryId) {
-            selectedLibraryId = savedLibId
-        }
-    }
-
-    private func saveSettings() {
-        let defaults = UserDefaults.standard
-        defaults.set(serverURL, forKey: keyServerURL)
-        defaults.set(apiToken, forKey: keyApiToken)
-        defaults.set(selectedLibraryId, forKey: keySelectedLibraryId)
     }
 }
 
 #Preview {
     ContentView()
+        .environmentObject(PlaybackSettingsViewModel())
+        .environmentObject(PlayerManager())
 }
 

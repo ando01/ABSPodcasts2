@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		BD57A0CC2ECFF43F00F6C6F2 /* PlayerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD57A0CB2ECFF43800F6C6F2 /* PlayerManager.swift */; };
+		BD57A0CE2ECFF50200F6C6F2 /* MiniPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD57A0CD2ECFF4FD00F6C6F2 /* MiniPlayerView.swift */; };
 		BD8F82B42ECE5C2000084EEB /* AudioSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD8F82B32ECE5C1D00084EEB /* AudioSessionManager.swift */; };
 		BDA5D63D2ECE1713004B42C8 /* ABSClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDA5D63C2ECE16FE004B42C8 /* ABSClient.swift */; };
 		BDA5D63F2ECE206F004B42C8 /* LibraryDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDA5D63E2ECE206A004B42C8 /* LibraryDetailView.swift */; };
@@ -36,6 +38,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		BD57A0CB2ECFF43800F6C6F2 /* PlayerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerManager.swift; sourceTree = "<group>"; };
+		BD57A0CD2ECFF4FD00F6C6F2 /* MiniPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniPlayerView.swift; sourceTree = "<group>"; };
 		BD8F82B32ECE5C1D00084EEB /* AudioSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSessionManager.swift; sourceTree = "<group>"; };
 		BDA5D6122ECE153E004B42C8 /* ABSPodcasts.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ABSPodcasts.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BDA5D61F2ECE153F004B42C8 /* ABSPodcastsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ABSPodcastsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -110,6 +114,8 @@
 			isa = PBXGroup;
 			children = (
 				BDF715E62ECFBB7C00E4AAB3 /* NowPlayingView.swift */,
+				BD57A0CB2ECFF43800F6C6F2 /* PlayerManager.swift */,
+				BD57A0CD2ECFF4FD00F6C6F2 /* MiniPlayerView.swift */,
 				BDF715E32ECFA2C400E4AAB3 /* SettingsView.swift */,
 				BDF715E12ECFA29700E4AAB3 /* PlaybackSettingsViewModel.swift */,
 				BDBEB8732ECEA3A200DB481D /* AudiobookDetailView.swift */,
@@ -281,7 +287,9 @@
 			files = (
 				BDF715E22ECFA29B00E4AAB3 /* PlaybackSettingsViewModel.swift in Sources */,
 				BDBEB8742ECEA3A600DB481D /* AudiobookDetailView.swift in Sources */,
+				BD57A0CC2ECFF43F00F6C6F2 /* PlayerManager.swift in Sources */,
 				BDF715E72ECFBBB500E4AAB3 /* NowPlayingView.swift in Sources */,
+				BD57A0CE2ECFF50200F6C6F2 /* MiniPlayerView.swift in Sources */,
 				BDA5D63F2ECE206F004B42C8 /* LibraryDetailView.swift in Sources */,
 				BDA5D6412ECE2C8E004B42C8 /* PodcastDetailView.swift in Sources */,
 				BD8F82B42ECE5C2000084EEB /* AudioSessionManager.swift in Sources */,

@@ -5,6 +5,8 @@ struct PodcastDetailView: View {
     let serverURL: String
     let apiToken: String
 
+    @EnvironmentObject var playerManager: PlayerManager
+
     @State private var episodes: [ABSClient.Episode] = []
     @State private var isLoading: Bool = false
     @State private var errorMessage: String? = nil
@@ -90,29 +92,16 @@ struct PodcastDetailView: View {
                         Text(desc)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .lineLimit(4)
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(6)
+                            .padding(.top, 4)
                     }
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 12)
             }
-
-            // Error with animation
-            if let errorMessage {
-                Section(header: Text("Error")) {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.red)
-                        Text(errorMessage)
-                            .foregroundStyle(.red)
-                            .font(.subheadline)
-                    }
-                }
-                .transition(.opacity.combined(with: .scale))
-            }
-
-            // Loading skeleton
+            
+            // Loading state with skeletons
             if isLoading {
                 Section(header: Text("Episodes")) {
                     ForEach(0..<5, id: \.self) { _ in
@@ -128,21 +117,16 @@ struct PodcastDetailView: View {
                     Spacer()
                 }) {
                     ForEach(Array(episodes.enumerated()), id: \.element.id) { index, episode in
-                        NavigationLink(
-                            destination: {
-                                if let urlString = episode.enclosure?.url,
-                                   let url = URL(string: urlString) {
-                                    NowPlayingView(
-                                        episode: episode,
-                                        audioURL: url,
-                                        artworkURL: podcastCoverURL,
-                                        apiToken: nil
-                                    )
-                                } else {
-                                    Text("No audio URL available for this episode.")
-                                }
+                        Button {
+                            if let urlString = episode.enclosure?.url,
+                               let url = URL(string: urlString) {
+                                playerManager.start(
+                                    episode: episode,
+                                    audioURL: url,
+                                    artworkURL: podcastCoverURL
+                                )
                             }
-                        ) {
+                        } label: {
                             EpisodeRowView(
                                 episode: episode,
                                 artworkURL: podcastCoverURL,
@@ -166,28 +150,47 @@ struct PodcastDetailView: View {
                             insertion: .opacity.combined(with: .offset(y: 10)),
                             removal: .opacity
                         ))
-                        .animation(.spring(response: 0.4, dampingFraction: 0.8).delay(Double(index) * 0.03), value: episodes.count)
+                        .animation(
+                            .spring(response: 0.4, dampingFraction: 0.8)
+                                .delay(Double(index) * 0.03),
+                            value: episodes.count
+                        )
                     }
                 }
             }
             // Empty state
             else {
                 Section {
-                    VStack(spacing: 16) {
-                        Image(systemName: "music.note.list")
+                    VStack(spacing: 12) {
+                        Image(systemName: "waveform.circle")
                             .font(.system(size: 48))
-                            .foregroundStyle(.gray.opacity(0.5))
-                        
-                        Text("No episodes found")
+                            .foregroundStyle(.secondary)
+                        Text("No episodes yet")
+                            .font(.headline)
+                        Text("Pull down to refresh or check back later.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 40)
+                    .padding(.vertical, 16)
+                }
+            }
+            
+            // Error section if needed
+            if let errorMessage = errorMessage {
+                Section {
+                    HStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.yellow)
+                        Text(errorMessage)
+                            .font(.subheadline)
+                    }
+                    .padding(.vertical, 4)
                 }
             }
         }
-        .navigationTitle("Episodes")
+        .listStyle(.insetGrouped)
+        .navigationTitle(podcast.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             loadEpisodes()
@@ -207,29 +210,29 @@ struct PodcastDetailView: View {
                 .foregroundStyle(.gray)
         }
     }
-
-    // MARK: - Loading
-
+    
+    // MARK: - Episode Loading
+    
     private func loadEpisodes() {
         guard let url = URL(string: serverURL), !apiToken.isEmpty else {
             errorMessage = "Missing server URL or API token."
             return
         }
-
-        let client = ABSClient(serverURL: url, apiToken: apiToken)
+        
         isLoading = true
         errorMessage = nil
-
+        
         Task {
+            let client = ABSClient(serverURL: url, apiToken: apiToken)
+            
             do {
                 let fetched = try await client.fetchEpisodes(podcastItemId: podcast.id)
-
                 let sorted = fetched.sorted { a, b in
                     let da = a.bestDate ?? .distantPast
                     let db = b.bestDate ?? .distantPast
                     return da > db
                 }
-
+                
                 await MainActor.run {
                     withAnimation(.spring(response: 0.4)) {
                         self.episodes = sorted
@@ -238,14 +241,8 @@ struct PodcastDetailView: View {
                 }
             } catch {
                 await MainActor.run {
-                    withAnimation {
-                        if let absErr = error as? ABSClient.ABSError {
-                            errorMessage = absErr.localizedDescription
-                        } else {
-                            errorMessage = error.localizedDescription
-                        }
-                        isLoading = false
-                    }
+                    self.isLoading = false
+                    self.errorMessage = error.localizedDescription
                 }
             }
         }
@@ -302,100 +299,73 @@ struct EpisodeRowView: View {
                                 .scaledToFill()
                                 .frame(width: 56, height: 56)
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .transition(.scale.combined(with: .opacity))
+                                .transition(.opacity.combined(with: .scale))
                         case .failure:
-                            smallPlaceholderArtwork
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.gray.opacity(0.2))
+                                .frame(width: 56, height: 56)
+                                .overlay(
+                                    Image(systemName: "waveform")
+                                        .foregroundStyle(.gray)
+                                )
                         @unknown default:
-                            smallPlaceholderArtwork
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.gray.opacity(0.2))
+                                .frame(width: 56, height: 56)
                         }
                     }
                 } else {
-                    smallPlaceholderArtwork
-                }
-                
-                // Progress bar overlay with animation
-                if let progress = progress, !progress.isCompleted {
-                    GeometryReader { geometry in
-                        ZStack(alignment: .leading) {
-                            Rectangle()
-                                .fill(Color.black.opacity(0.3))
-                            
-                            Rectangle()
-                                .fill(Color.blue)
-                                .frame(width: geometry.size.width * (progress.progressPercentage / 100))
-                        }
-                    }
-                    .frame(height: 3)
-                    .clipShape(RoundedRectangle(cornerRadius: 1.5))
-                    .transition(.opacity)
-                }
-                
-                // Completed checkmark with bounce animation
-                if let progress = progress, progress.isCompleted {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.white)
-                        .background(
-                            Circle()
-                                .fill(Color.green)
-                                .frame(width: 24, height: 24)
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.gray.opacity(0.2))
+                        .frame(width: 56, height: 56)
+                        .overlay(
+                            Image(systemName: "waveform")
+                                .foregroundStyle(.gray)
                         )
-                        .offset(x: 16, y: 16)
-                        .transition(.scale.combined(with: .opacity))
+                }
+                
+                // Progress bar
+                if let progress = progress, progress.progressPercentage > 0 {
+                    GeometryReader { geo in
+                        let width = geo.size.width * CGFloat(min(progress.progressPercentage / 100.0, 1.0))
+                        Rectangle()
+                            .fill(Color.blue)
+                            .frame(width: width, height: 4)
+                            .cornerRadius(2)
+                            .offset(y: -2)
+                    }
+                    .frame(height: 4)
                 }
             }
             .frame(width: 56, height: 56)
             
-            // Episode Info
+            // Title & meta
             VStack(alignment: .leading, spacing: 4) {
                 Text(episode.title)
-                    .font(.body)
+                    .font(.subheadline)
                     .fontWeight(.medium)
                     .lineLimit(2)
-
-                HStack(spacing: 6) {
-                    if let date = episode.bestDate {
-                        Text(date.formatted(date: .abbreviated, time: .omitted))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    
-                    if let progress = progress, !progress.isCompleted {
-                        Text("•")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        
-                        Text("\(Int(progress.progressPercentage))%")
-                            .font(.caption)
-                            .foregroundStyle(.blue)
-                            .fontWeight(.medium)
-                    }
-                }
-
-                if let desc = episode.description, !desc.isEmpty {
-                    Text(desc)
+                
+                if let date = episode.bestDate {
+                    Text(date.formatted(date: .abbreviated, time: .shortened))
                         .font(.caption)
-                        .lineLimit(2)
                         .foregroundStyle(.secondary)
                 }
+                
+                if let progress = progress, progress.progressPercentage > 0 {
+                    Text(progress.progressPercentage >= 95 ? "Finished" : "Progress: \(Int(progress.progressPercentage))%")
+                        .font(.caption2)
+                        .foregroundStyle(progress.progressPercentage >= 95 ? .green : .blue)
+                }
             }
+            
+            Spacer()
         }
         .padding(.vertical, 6)
     }
-    
-    private var smallPlaceholderArtwork: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.gray.opacity(0.2))
-                .frame(width: 56, height: 56)
-            Image(systemName: "music.note")
-                .font(.system(size: 22))
-                .foregroundStyle(.gray)
-        }
-    }
 }
 
-// MARK: - Skeleton Episode Row
+// MARK: - Skeleton Row for Loading
 
 struct SkeletonEpisodeRow: View {
     @State private var isAnimating = false
@@ -403,29 +373,29 @@ struct SkeletonEpisodeRow: View {
     var body: some View {
         HStack(spacing: 12) {
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color.gray.opacity(0.2))
+                .fill(LinearGradient(
+                    colors: [
+                        Color.gray.opacity(0.2),
+                        Color.gray.opacity(0.3),
+                        Color.gray.opacity(0.2)
+                    ],
+                    startPoint: isAnimating ? .leading : .trailing,
+                    endPoint: isAnimating ? .trailing : .leading
+                ))
                 .frame(width: 56, height: 56)
+                .animation(.linear(duration: 1.2).repeatForever(autoreverses: true), value: isAnimating)
             
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.gray.opacity(0.25))
+                    .frame(height: 14)
                 RoundedRectangle(cornerRadius: 4)
                     .fill(Color.gray.opacity(0.2))
-                    .frame(height: 16)
-                    .frame(maxWidth: .infinity)
-                
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.gray.opacity(0.2))
-                    .frame(height: 12)
-                    .frame(width: 100)
-                
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.gray.opacity(0.2))
-                    .frame(height: 12)
-                    .frame(maxWidth: 200)
+                    .frame(height: 10)
+                    .padding(.trailing, 40)
             }
         }
-        .padding(.vertical, 6)
-        .opacity(isAnimating ? 0.5 : 1.0)
-        .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: isAnimating)
+        .redacted(reason: .placeholder)
         .onAppear {
             isAnimating = true
         }
@@ -457,4 +427,6 @@ struct SkeletonEpisodeRow: View {
         serverURL: "https://example.com",
         apiToken: "demo"
     )
+    .environmentObject(PlayerManager())
 }
+
