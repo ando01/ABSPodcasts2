@@ -6,93 +6,13 @@ struct ContentView: View {
 
     @State private var serverURL: String = ""
     @State private var apiToken: String = ""
-
-    @State private var libraries: [ABSClient.Library] = []
-    @State private var isLoadingLibraries: Bool = false
-    @State private var librariesErrorMessage: String?
+    @State private var isConnected: Bool = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
+            mainView
 
-            // MAIN APP UI
-            NavigationStack {
-                Form {
-                    // Server + token inputs
-                    Section(header: Text("Audiobookshelf Server")) {
-                        TextField("Server URL (e.g. https://abs.example.com)", text: $serverURL)
-                            .keyboardType(.URL)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled(true)
-
-                        TextField("API Token", text: $apiToken)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled(true)
-                    }
-
-                    // Connect / load libraries
-                    Section {
-                        Button {
-                            Task {
-                                await loadLibraries()
-                            }
-                        } label: {
-                            if isLoadingLibraries {
-                                HStack {
-                                    ProgressView()
-                                    Text("Connecting…")
-                                }
-                            } else {
-                                Text("Connect & Load Libraries")
-                            }
-                        }
-                        .disabled(serverURL.isEmpty || apiToken.isEmpty)
-                    }
-
-                    // Libraries list
-                    if !libraries.isEmpty {
-                        Section(header: Text("Libraries")) {
-                            ForEach(libraries) { library in
-                                NavigationLink {
-                                    LibraryDetailView(
-                                        library: library,
-                                        serverURL: serverURL,
-                                        apiToken: apiToken
-                                    )
-                                } label: {
-                                    HStack(spacing: 10) {
-                                        // simple icon based on media type
-                                        Image(systemName: library.mediaType.lowercased().contains("podcast") ? "dot.radiowaves.left.and.right" : "book")
-                                            .foregroundStyle(.blue)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(library.name)
-                                                .font(.subheadline)
-                                                .fontWeight(.medium)
-                                            Text(library.mediaType.capitalized)
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Error message
-                    if let msg = librariesErrorMessage {
-                        Section {
-                            HStack(spacing: 8) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.yellow)
-                                Text(msg)
-                                    .font(.subheadline)
-                            }
-                        }
-                    }
-                }
-                .navigationTitle("ABS Podcasts")
-            }
-
-            // FLOATING MINI PLAYER
+            // Mini player overlaid at bottom
             if playerManager.isActive && !playerManager.isPresented {
                 MiniPlayerView()
                     .padding(.horizontal)
@@ -100,60 +20,174 @@ struct ContentView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        // FULL NOW PLAYING SHEET
         .sheet(isPresented: $playerManager.isPresented) {
-            if let episode = playerManager.currentEpisode,
-               let url = playerManager.audioURL {
-                NavigationStack {
-                    NowPlayingView(
-                        episode: episode,
-                        audioURL: url,
-                        artworkURL: playerManager.artworkURL,
-                        apiToken: nil
-                    )
+            NavigationStack {
+                NowPlayingView()
+                    .environmentObject(playerManager)
                     .environmentObject(playbackSettings)
-                }
-            } else {
-                Text("No active item")
             }
         }
     }
 
-    // MARK: - Networking
+    // MARK: - Root navigation
+
+    private var mainView: some View {
+        NavigationStack {
+            Group {
+                if isConnected {
+                    // After connecting, show list of libraries
+                    LibrariesView(serverURL: serverURL, apiToken: apiToken)
+                } else {
+                    // Initial login form
+                    loginForm
+                }
+            }
+        }
+    }
+
+    // MARK: - Login form
+
+    private var loginForm: some View {
+        Form {
+            Section(header: Text("Audiobookshelf Server")) {
+                TextField("Server URL (e.g. http://192.168.20.228:13378)", text: $serverURL)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled(true)
+
+                TextField("API Token", text: $apiToken)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled(true)
+            }
+
+            Section {
+                Button(action: connectToServer) {
+                    Text("Connect")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .navigationTitle("Audiobookshelf Server")
+    }
+
+    private func connectToServer() {
+        // Simple validation – you already know the values work from your old app
+        guard URL(string: serverURL) != nil, !apiToken.isEmpty else { return }
+        isConnected = true
+    }
+}
+
+// MARK: - Libraries list
+
+/// Shows the list of libraries from Audiobookshelf and navigates into `LibraryDetailView`.
+struct LibrariesView: View {
+    let serverURL: String
+    let apiToken: String
+
+    @State private var libraries: [ABSClient.Library] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        List {
+            if isLoading {
+                HStack {
+                    Spacer()
+                    ProgressView("Loading libraries…")
+                    Spacer()
+                }
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .foregroundColor(.red)
+                    .font(.subheadline)
+            }
+
+            ForEach(libraries) { library in
+                NavigationLink(
+                    destination: LibraryDetailView(
+                        library: library,
+                        serverURL: serverURL,
+                        apiToken: apiToken
+                    )
+                ) {
+                    HStack(spacing: 12) {
+                        Image(systemName: iconName(for: library))
+                            .font(.title2)
+                            .frame(width: 32, height: 32)
+                            .foregroundStyle(.primary)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(library.name)
+                                .font(.headline)
+
+                            Text(library.mediaType.capitalized)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .font(.footnote)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 6)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("Libraries")
+        .task {
+            await loadLibraries()
+        }
+    }
+
+    // MARK: - Helpers
+
+    /// Map Audiobookshelf's library.icon / mediaType to a nice SF Symbol.
+    private func iconName(for library: ABSClient.Library) -> String {
+        let icon = library.icon?.lowercased() ?? ""
+        let type = library.mediaType.lowercased()
+
+        if icon.contains("headphone") {
+            return "headphones"
+        } else if icon.contains("microphone") || icon.contains("mic") {
+            return "mic.fill"
+        }
+
+        if type.contains("book") {
+            return "books.vertical"
+        } else if type.contains("podcast") {
+            return "mic.and.waveform"
+        }
+
+        return "square.stack"
+    }
 
     private func loadLibraries() async {
-        guard let url = URL(string: serverURL), !apiToken.isEmpty else {
-            await MainActor.run {
-                librariesErrorMessage = "Please enter a valid server URL and API token."
-            }
-            return
-        }
+        guard let baseURL = URL(string: serverURL) else { return }
 
         await MainActor.run {
-            isLoadingLibraries = true
-            librariesErrorMessage = nil
+            isLoading = true
+            errorMessage = nil
         }
 
-        let client = ABSClient(serverURL: url, apiToken: apiToken)
+        let client = ABSClient(serverURL: baseURL, apiToken: apiToken)
 
         do {
             let libs = try await client.fetchLibraries()
             await MainActor.run {
                 self.libraries = libs
-                self.isLoadingLibraries = false
+                self.isLoading = false
             }
         } catch {
             await MainActor.run {
-                self.isLoadingLibraries = false
-                self.librariesErrorMessage = error.localizedDescription
+                self.errorMessage = error.localizedDescription
+                self.isLoading = false
             }
         }
     }
-}
-
-#Preview {
-    ContentView()
-        .environmentObject(PlaybackSettingsViewModel())
-        .environmentObject(PlayerManager())
 }
 
