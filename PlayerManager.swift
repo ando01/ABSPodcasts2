@@ -192,39 +192,98 @@ final class PlayerManager: ObservableObject {
     private func setupRemoteCommands() {
         let commandCenter = MPRemoteCommandCenter.shared()
 
+        // Clear old targets if you want to be super safe (optional, but avoids duplicates)
+        commandCenter.playCommand.removeTarget(nil)
+        commandCenter.pauseCommand.removeTarget(nil)
+        commandCenter.togglePlayPauseCommand.removeTarget(nil)
+        commandCenter.skipBackwardCommand.removeTarget(nil)
+        commandCenter.skipForwardCommand.removeTarget(nil)
+        commandCenter.nextTrackCommand.removeTarget(nil)
+        commandCenter.previousTrackCommand.removeTarget(nil)
+        commandCenter.seekForwardCommand.removeTarget(nil)
+        commandCenter.seekBackwardCommand.removeTarget(nil)
+
+        // Play
         commandCenter.playCommand.isEnabled = true
         commandCenter.playCommand.addTarget { [weak self] _ in
             self?.play()
             return .success
         }
 
+        // Pause
         commandCenter.pauseCommand.isEnabled = true
         commandCenter.pauseCommand.addTarget { [weak self] _ in
             self?.pause()
             return .success
         }
 
+        // Toggle
         commandCenter.togglePlayPauseCommand.isEnabled = true
         commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
             self?.togglePlayPause()
             return .success
         }
 
-        // Use generic 15/30s skips here; UI buttons can use custom values.
+        // Base skip amounts (you can tweak these)
+        let backwardSeconds: Double = 15
+        let forwardSeconds: Double = 30
+
+        // Skip backward (e.g. from Control Center skip back button)
         commandCenter.skipBackwardCommand.isEnabled = true
-        commandCenter.skipBackwardCommand.preferredIntervals = [15]
+        commandCenter.skipBackwardCommand.preferredIntervals = [NSNumber(value: backwardSeconds)]
         commandCenter.skipBackwardCommand.addTarget { [weak self] _ in
-            self?.skip(by: -15)
+            self?.skip(by: -backwardSeconds)
             return .success
         }
 
+        // Skip forward (e.g. from Control Center)
         commandCenter.skipForwardCommand.isEnabled = true
-        commandCenter.skipForwardCommand.preferredIntervals = [30]
+        commandCenter.skipForwardCommand.preferredIntervals = [NSNumber(value: forwardSeconds)]
         commandCenter.skipForwardCommand.addTarget { [weak self] _ in
-            self?.skip(by: 30)
+            self?.skip(by: forwardSeconds)
+            return .success
+        }
+
+        // 🎧 AirPods often send these as "next/previous track"
+        commandCenter.nextTrackCommand.isEnabled = true
+        commandCenter.nextTrackCommand.addTarget { [weak self] _ in
+            self?.skip(by: forwardSeconds)
+            return .success
+        }
+
+        commandCenter.previousTrackCommand.isEnabled = true
+        commandCenter.previousTrackCommand.addTarget { [weak self] _ in
+            self?.skip(by: -backwardSeconds)
+            return .success
+        }
+
+        // Some devices use continuous seeking – we map these to discrete skips too
+        commandCenter.seekForwardCommand.isEnabled = true
+        commandCenter.seekForwardCommand.addTarget { [weak self] event in
+            guard let self,
+                  let seekEvent = event as? MPSeekCommandEvent
+            else { return .commandFailed }
+
+            if seekEvent.type == .beginSeeking {
+                // Treat as a small skip when user initiates
+                self.skip(by: forwardSeconds)
+            }
+            return .success
+        }
+
+        commandCenter.seekBackwardCommand.isEnabled = true
+        commandCenter.seekBackwardCommand.addTarget { [weak self] event in
+            guard let self,
+                  let seekEvent = event as? MPSeekCommandEvent
+            else { return .commandFailed }
+
+            if seekEvent.type == .beginSeeking {
+                self.skip(by: -backwardSeconds)
+            }
             return .success
         }
     }
+
 
     private func updateNowPlayingInfo() {
         guard let episode = currentEpisode else { return }
