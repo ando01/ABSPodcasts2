@@ -50,11 +50,18 @@ final class PlayerManager: ObservableObject {
         let player = AVPlayer(url: audioURL)
         self.player = player
 
+        // 👉 NEW: remember last played item for "Pick up where you left off"
+        progressManager.saveLastPlayed(
+            episodeId: episode.id,
+            title: episode.title,
+            streamURLString: audioURL.absoluteString,
+            artworkURLString: artworkURL?.absoluteString
+        )
+
         setupPeriodicTimeObserver()
         loadDuration()
         setupRemoteCommands()
 
-        // default speed if not already set
         if playbackSpeed <= 0 {
             playbackSpeed = 1.0
         }
@@ -62,6 +69,7 @@ final class PlayerManager: ObservableObject {
         play()
         isPresented = true
     }
+
 
     /// Show the full-screen Now Playing sheet.
     func present() {

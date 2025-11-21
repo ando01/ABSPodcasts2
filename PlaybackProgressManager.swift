@@ -1,11 +1,12 @@
 import Foundation
 
-/// Manages playback progress for episodes
+/// Manages playback progress for episodes/audiobooks
 class PlaybackProgressManager {
     static let shared = PlaybackProgressManager()
     
     private let userDefaults = UserDefaults.standard
     private let progressKey = "episodePlaybackProgress"
+    private let lastPlayedKey = "lastPlayedItem"
     
     struct Progress: Codable {
         let episodeId: String
@@ -19,9 +20,18 @@ class PlaybackProgressManager {
         }
         
         var isCompleted: Bool {
-            // Consider completed if 95% or more played
-            progressPercentage >= 95
+            guard duration > 0 else { return false }
+            // Consider completed if within last 3 seconds
+            return currentTime >= max(duration - 3, 0)
         }
+    }
+    
+    struct LastPlayedItem: Codable {
+        let episodeId: String
+        let title: String
+        let streamURLString: String
+        let artworkURLString: String?
+        let lastPlayed: Date
     }
     
     private init() {}
@@ -42,7 +52,7 @@ class PlaybackProgressManager {
         
         if let encoded = try? JSONEncoder().encode(allProgress) {
             userDefaults.set(encoded, forKey: progressKey)
-            print("✅ Saved progress for \(episodeId): \(currentTime)s / \(duration)s")
+            // print("💾 Saved progress for \(episodeId)")
         }
     }
     
@@ -69,16 +79,44 @@ class PlaybackProgressManager {
         
         if let encoded = try? JSONEncoder().encode(allProgress) {
             userDefaults.set(encoded, forKey: progressKey)
-            print("🗑️ Cleared progress for \(episodeId)")
+            // print("🗑️ Cleared progress for \(episodeId)")
         }
     }
     
-    func clearAllProgress() {
-        userDefaults.removeObject(forKey: progressKey)
-        print("🗑️ Cleared all progress")
+    // MARK: - Last Played Item (for "Pick up where you left off")
+    
+    func saveLastPlayed(
+        episodeId: String,
+        title: String,
+        streamURLString: String,
+        artworkURLString: String?
+    ) {
+        let latest = LastPlayedItem(
+            episodeId: episodeId,
+            title: title,
+            streamURLString: streamURLString,
+            artworkURLString: artworkURLString,
+            lastPlayed: Date()
+        )
+        
+        if let encoded = try? JSONEncoder().encode(latest) {
+            userDefaults.set(encoded, forKey: lastPlayedKey)
+        }
     }
     
-    // MARK: - Helpers
+    func loadLastPlayed() -> LastPlayedItem? {
+        guard let data = userDefaults.data(forKey: lastPlayedKey),
+              let decoded = try? JSONDecoder().decode(LastPlayedItem.self, from: data) else {
+            return nil
+        }
+        return decoded
+    }
+    
+    func clearLastPlayed() {
+        userDefaults.removeObject(forKey: lastPlayedKey)
+    }
+    
+    // MARK: - Formatting
     
     func formatTime(_ seconds: Double) -> String {
         guard seconds.isFinite && seconds >= 0 else { return "0:00" }
@@ -94,3 +132,4 @@ class PlaybackProgressManager {
         }
     }
 }
+
