@@ -7,12 +7,15 @@ struct PodcastDetailView: View {
 
     @EnvironmentObject var playerManager: PlayerManager
 
+    /// Singleton download manager (observed so UI updates when downloads change)
+    @ObservedObject private var downloadManager = DownloadManager.shared
+
     @State private var episodes: [ABSClient.Episode] = []
     @State private var isLoading: Bool = false
     @State private var errorMessage: String? = nil
-    
+
     private let progressManager = PlaybackProgressManager.shared
-    
+
     private var podcastCoverURL: URL? {
         guard let base = URL(string: serverURL) else { return nil }
         return base.appending(path: "/api/items/\(podcast.id)/cover")
@@ -20,10 +23,10 @@ struct PodcastDetailView: View {
 
     var body: some View {
         List {
-            // Podcast header with enhanced design
+            // MARK: - Header
             Section {
                 VStack(spacing: 16) {
-                    // Cover art with shadow and animation
+                    // Artwork
                     if let artworkURL = podcastCoverURL {
                         AsyncImage(url: artworkURL) { phase in
                             switch phase {
@@ -51,20 +54,20 @@ struct PodcastDetailView: View {
                     } else {
                         placeholderArtwork
                     }
-                    
-                    // Title and info
+
+                    // Title / info
                     VStack(spacing: 8) {
                         Text(podcast.displayTitle)
                             .font(.title2)
                             .fontWeight(.bold)
                             .multilineTextAlignment(.center)
-                        
+
                         if !episodes.isEmpty {
                             Text("\(episodes.count) Episodes")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
-                        
+
                         // Tags
                         let tags = podcast.displayTags
                         if !tags.isEmpty {
@@ -86,7 +89,7 @@ struct PodcastDetailView: View {
                             }
                         }
                     }
-                    
+
                     // Description
                     if let desc = podcast.displayDescription, !desc.isEmpty {
                         Text(desc)
@@ -100,8 +103,8 @@ struct PodcastDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.vertical, 12)
             }
-            
-            // Loading state with skeletons
+
+            // MARK: - Loading skeletons
             if isLoading {
                 Section(header: Text("Episodes")) {
                     ForEach(0..<5, id: \.self) { _ in
@@ -109,7 +112,8 @@ struct PodcastDetailView: View {
                     }
                 }
             }
-            // Episodes with staggered animation
+
+            // MARK: - Episodes
             else if !episodes.isEmpty {
                 Section(header: HStack {
                     Text("Episodes")
@@ -117,26 +121,24 @@ struct PodcastDetailView: View {
                     Spacer()
                 }) {
                     ForEach(Array(episodes.enumerated()), id: \.element.id) { index, episode in
+                        let progress = progressManager.loadProgress(for: episode.id)
+                        let isDownloaded = downloadManager.isDownloaded(id: episode.id)
+
                         Button {
-                            if let urlString = episode.enclosure?.url,
-                               let url = URL(string: urlString) {
-                                playerManager.start(
-                                    episode: episode,
-                                    audioURL: url,
-                                    artworkURL: podcastCoverURL
-                                )
-                            }
+                            play(episode: episode)
                         } label: {
                             EpisodeRowView(
                                 episode: episode,
                                 artworkURL: podcastCoverURL,
-                                progress: progressManager.loadProgress(for: episode.id)
+                                progress: progress,
+                                isDownloaded: isDownloaded
                             )
                         }
                         .buttonStyle(.plain)
                         .contentShape(Rectangle())
+                        // Trailing swipe: clear progress
                         .swipeActions(edge: .trailing) {
-                            if progressManager.loadProgress(for: episode.id) != nil {
+                            if progress != nil {
                                 Button(role: .destructive) {
                                     withAnimation {
                                         progressManager.clearProgress(for: episode.id)
@@ -144,6 +146,27 @@ struct PodcastDetailView: View {
                                 } label: {
                                     Label("Clear Progress", systemImage: "trash")
                                 }
+                            }
+                        }
+                        // Leading swipe: download / delete download
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            if isDownloaded {
+                                Button(role: .destructive) {
+                                    withAnimation {
+                                        downloadManager.delete(id: episode.id)
+                                    }
+                                } label: {
+                                    Label("Remove Download", systemImage: "xmark.circle")
+                                }
+                            } else {
+                                Button {
+                                    Task {
+                                        await downloadEpisode(episode)
+                                    }
+                                } label: {
+                                    Label("Download", systemImage: "arrow.down.circle")
+                                }
+                                .tint(.blue)
                             }
                         }
                         .transition(.asymmetric(
@@ -158,7 +181,8 @@ struct PodcastDetailView: View {
                     }
                 }
             }
-            // Empty state
+
+            // MARK: - Empty state
             else {
                 Section {
                     VStack(spacing: 12) {
@@ -175,9 +199,9 @@ struct PodcastDetailView: View {
                     .padding(.vertical, 16)
                 }
             }
-            
-            // Error section if needed
-            if let errorMessage = errorMessage {
+
+            // MARK: - Error
+            if let errorMessage {
                 Section {
                     HStack(spacing: 12) {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -199,7 +223,9 @@ struct PodcastDetailView: View {
             await refreshEpisodes()
         }
     }
-    
+
+    // MARK: - Artwork placeholder
+
     private var placeholderArtwork: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 16)
@@ -210,21 +236,51 @@ struct PodcastDetailView: View {
                 .foregroundStyle(.gray)
         }
     }
-    
-    // MARK: - Episode Loading
-    
+
+    // MARK: - Play + Download helpers
+
+    private func play(episode: ABSClient.Episode) {
+        guard let urlString = episode.enclosure?.url,
+              let url = URL(string: urlString) else { return }
+
+        playerManager.start(
+            episode: episode,
+            audioURL: url,
+            artworkURL: podcastCoverURL
+        )
+    }
+
+    /// Download an episode and cache its artwork for offline lockscreen art.
+    private func downloadEpisode(_ episode: ABSClient.Episode) async {
+        guard let urlString = episode.enclosure?.url,
+              let url = URL(string: urlString) else { return }
+
+        do {
+            try await downloadManager.download(id: episode.id, from: url)
+
+            // Also cache artwork so offline playback has lockscreen art
+            if let artworkURL = podcastCoverURL {
+                await downloadManager.storeArtwork(id: episode.id, from: artworkURL)
+            }
+        } catch {
+            print("⚠️ Failed to download episode: \(error)")
+        }
+    }
+
+    // MARK: - Episode loading
+
     private func loadEpisodes() {
         guard let url = URL(string: serverURL), !apiToken.isEmpty else {
             errorMessage = "Missing server URL or API token."
             return
         }
-        
+
         isLoading = true
         errorMessage = nil
-        
+
         Task {
             let client = ABSClient(serverURL: url, apiToken: apiToken)
-            
+
             do {
                 let fetched = try await client.fetchEpisodes(podcastItemId: podcast.id)
                 let sorted = fetched.sorted { a, b in
@@ -232,7 +288,7 @@ struct PodcastDetailView: View {
                     let db = b.bestDate ?? .distantPast
                     return da > db
                 }
-                
+
                 await MainActor.run {
                     withAnimation(.spring(response: 0.4)) {
                         self.episodes = sorted
@@ -247,11 +303,11 @@ struct PodcastDetailView: View {
             }
         }
     }
-    
+
     private func refreshEpisodes() async {
         guard let url = URL(string: serverURL), !apiToken.isEmpty else { return }
         let client = ABSClient(serverURL: url, apiToken: apiToken)
-        
+
         do {
             let fetched = try await client.fetchEpisodes(podcastItemId: podcast.id)
             let sorted = fetched.sorted { a, b in
@@ -259,30 +315,31 @@ struct PodcastDetailView: View {
                 let db = b.bestDate ?? .distantPast
                 return da > db
             }
-            
+
             await MainActor.run {
                 withAnimation(.spring(response: 0.4)) {
                     self.episodes = sorted
                 }
             }
         } catch {
-            // Silently fail on refresh
+            // ignore errors on pull-to-refresh
         }
     }
 }
 
-// MARK: - Episode Row Component
+// MARK: - Episode Row
 
 struct EpisodeRowView: View {
     let episode: ABSClient.Episode
     let artworkURL: URL?
     let progress: PlaybackProgressManager.Progress?
-    
+    let isDownloaded: Bool
+
     var body: some View {
         HStack(spacing: 12) {
-            // Episode artwork with progress overlay
+            // Artwork + progress overlay
             ZStack(alignment: .bottom) {
-                if let artworkURL = artworkURL {
+                if let artworkURL {
                     AsyncImage(url: artworkURL) { phase in
                         switch phase {
                         case .empty:
@@ -323,9 +380,9 @@ struct EpisodeRowView: View {
                                 .foregroundStyle(.gray)
                         )
                 }
-                
+
                 // Progress bar
-                if let progress = progress, progress.progressPercentage > 0 {
+                if let progress, progress.progressPercentage > 0 {
                     GeometryReader { geo in
                         let width = geo.size.width * CGFloat(min(progress.progressPercentage / 100.0, 1.0))
                         Rectangle()
@@ -338,38 +395,46 @@ struct EpisodeRowView: View {
                 }
             }
             .frame(width: 56, height: 56)
-            
-            // Title & meta
+
+            // Title + meta
             VStack(alignment: .leading, spacing: 4) {
-                Text(episode.title)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                    .lineLimit(2)
-                
+                HStack {
+                    Text(episode.title)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .lineLimit(2)
+
+                    if isDownloaded {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .foregroundStyle(.blue)
+                            .imageScale(.small)
+                    }
+                }
+
                 if let date = episode.bestDate {
                     Text(date.formatted(date: .abbreviated, time: .shortened))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                
-                if let progress = progress, progress.progressPercentage > 0 {
+
+                if let progress, progress.progressPercentage > 0 {
                     Text(progress.progressPercentage >= 95 ? "Finished" : "Progress: \(Int(progress.progressPercentage))%")
                         .font(.caption2)
                         .foregroundStyle(progress.progressPercentage >= 95 ? .green : .blue)
                 }
             }
-            
+
             Spacer()
         }
         .padding(.vertical, 6)
     }
 }
 
-// MARK: - Skeleton Row for Loading
+// MARK: - Skeleton Row
 
 struct SkeletonEpisodeRow: View {
     @State private var isAnimating = false
-    
+
     var body: some View {
         HStack(spacing: 12) {
             RoundedRectangle(cornerRadius: 8)
@@ -384,7 +449,7 @@ struct SkeletonEpisodeRow: View {
                 ))
                 .frame(width: 56, height: 56)
                 .animation(.linear(duration: 1.2).repeatForever(autoreverses: true), value: isAnimating)
-            
+
             VStack(alignment: .leading, spacing: 6) {
                 RoundedRectangle(cornerRadius: 4)
                     .fill(Color.gray.opacity(0.25))
@@ -400,33 +465,5 @@ struct SkeletonEpisodeRow: View {
             isAnimating = true
         }
     }
-}
-
-#Preview {
-    PodcastDetailView(
-        podcast: ABSClient.LibraryItem(
-            id: "demo",
-            libraryId: "lib1",
-            mediaType: "podcast",
-            media: .init(
-                metadata: .init(
-                    title: "Demo Podcast",
-                    subtitle: nil,
-                    description: "A demo show",
-                    genres: ["Tech"],
-                    author: "Me",
-                    releaseDate: nil,
-                    publishedAt: nil,
-                    addedAt: nil
-                ),
-                coverPath: nil,
-                tags: ["Tech"]
-            ),
-            tags: ["Tech"]
-        ),
-        serverURL: "https://example.com",
-        apiToken: "demo"
-    )
-    .environmentObject(PlayerManager())
 }
 

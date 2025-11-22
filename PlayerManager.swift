@@ -5,7 +5,6 @@ import UIKit
 import Combine
 
 /// Central playback manager for podcasts + audiobooks.
-/// Owns the AVPlayer and publishes state to the UI (mini player, NowPlayingView, etc.)
 final class PlayerManager: ObservableObject {
 
     // MARK: - Published state for UI
@@ -34,17 +33,14 @@ final class PlayerManager: ObservableObject {
 
     private let progressManager = PlaybackProgressManager.shared
 
-    /// Cached artwork image used for lockscreen / CarPlay / Watch
+    /// Cached artwork image used for lockscreen / CarPlay
     private var artworkImage: UIImage?
 
     // MARK: - Public API
 
-    /// Start playback of an episode (podcast or audiobook).
-    /// - Parameters:
-    ///   - episode: ABSClient.Episode (can be a "fake" one for audiobooks)
-    ///   - audioURL: Direct stream URL
-    ///   - artworkURL: Cover art URL (what you also use in SwiftUI)
     func start(episode: ABSClient.Episode, audioURL: URL, artworkURL: URL?) {
+        print("▶️ [PlayerManager] start() id=\(episode.id)")
+
         // Clean up any existing player
         cleanupPlayer()
 
@@ -60,11 +56,21 @@ final class PlayerManager: ObservableObject {
         playbackSpeed = max(playbackSpeed, 1.0)
         artworkImage = nil
 
-        // Create new player instance
-        let player = AVPlayer(url: audioURL)
+        // Prefer local downloaded copy if available
+        let finalURL: URL
+        if let local = DownloadManager.shared.localURL(for: episode.id) {
+            finalURL = local
+            print("📀 [PlayerManager] Using LOCAL audio at \(local.path)")
+        } else {
+            finalURL = audioURL
+            print("🌐 [PlayerManager] Using REMOTE audio at \(audioURL)")
+        }
+
+        let item = AVPlayerItem(url: finalURL)
+        let player = AVPlayer(playerItem: item)
         self.player = player
 
-        // Remember last played item for "Pick up where you left off"
+        // Remember last played item
         progressManager.saveLastPlayed(
             episodeId: episode.id,
             title: episode.title,
@@ -77,7 +83,7 @@ final class PlayerManager: ObservableObject {
         loadDuration()
         setupRemoteCommands()
 
-        // Load artwork for lock screen / CarPlay
+        // Load artwork (from cache first, then network)
         loadArtworkForNowPlaying()
 
         // Start playback
@@ -85,27 +91,25 @@ final class PlayerManager: ObservableObject {
         updateNowPlayingInfo()
     }
 
-    /// Play current item
     func play() {
         guard let player = player else { return }
         player.playImmediately(atRate: Float(playbackSpeed))
         isPlaying = true
+        print("▶️ [PlayerManager] play()")
         updateNowPlayingInfo()
     }
 
-    /// Pause current item
     func pause() {
         player?.pause()
         isPlaying = false
+        print("⏸ [PlayerManager] pause()")
         updateNowPlayingInfo()
     }
 
-    /// Toggle between play and pause
     func togglePlayPause() {
         isPlaying ? pause() : play()
     }
 
-    /// Seek to an absolute time in seconds
     func seek(to time: Double) {
         guard let player = player else { return }
         let clamped = max(time, 0)
@@ -113,26 +117,26 @@ final class PlayerManager: ObservableObject {
         player.seek(to: cmTime) { [weak self] _ in
             guard let self else { return }
             self.currentTime = clamped
+            print("⏩ [PlayerManager] seek(to: \(clamped))")
             self.updateNowPlayingInfo()
         }
     }
 
-    /// Skip forward or backward by a delta in seconds
     func skip(by seconds: Double) {
         seek(to: currentTime + seconds)
     }
 
-    /// Change playback speed
     func setSpeed(_ speed: Double) {
         playbackSpeed = speed
         if isPlaying {
             player?.rate = Float(speed)
         }
+        print("🎚 [PlayerManager] setSpeed(\(speed))")
         updateNowPlayingInfo()
     }
 
-    /// Stop playback and clear state
     func stop() {
+        print("⏹ [PlayerManager] stop()")
         cleanupPlayer()
 
         currentEpisode = nil
@@ -160,7 +164,6 @@ final class PlayerManager: ObservableObject {
         player = nil
     }
 
-    // Periodically update current time + save progress + update Now Playing
     private func setupPeriodicTimeObserver() {
         guard let player = player else { return }
 
@@ -184,7 +187,6 @@ final class PlayerManager: ObservableObject {
         }
     }
 
-    // Load total duration once AVAsset loads
     private func loadDuration() {
         guard let player = player,
               let item = player.currentItem else { return }
@@ -193,49 +195,72 @@ final class PlayerManager: ObservableObject {
 
         Task {
             do {
-                // New async API in iOS 15+ / 16+
                 let time = try await asset.load(.duration)
                 let durationSeconds = time.seconds
                 guard durationSeconds.isFinite else { return }
 
                 await MainActor.run {
                     self.duration = durationSeconds
+                    print("⏱ [PlayerManager] duration=\(durationSeconds)")
                     self.updateNowPlayingInfo()
                 }
             } catch {
-                // Optional: log, but don't crash playback if duration fails
-                print("⚠️ Failed to load duration: \(error.localizedDescription)")
+                print("⚠️ [PlayerManager] Failed to load duration: \(error.localizedDescription)")
             }
         }
     }
-
 
     // MARK: - Artwork loading for lockscreen / CarPlay
 
-    /// Fetch cover image from artworkURL and cache it as UIImage
     private func loadArtworkForNowPlaying() {
-        guard let url = artworkURL else { return }
+        guard let episode = currentEpisode else { return }
 
-        // Do not block the main thread
+        // 1) Cached artwork on disk?
+        if let cached = DownloadManager.shared.cachedArtworkImage(for: episode.id) {
+            print("🎨 [PlayerManager] Using CACHED artwork for id=\(episode.id)")
+            self.artworkImage = cached
+            self.updateNowPlayingInfo()
+            return
+        } else {
+            print("🎨 [PlayerManager] No cached artwork for id=\(episode.id), will try remote")
+        }
+
+        // 2) Fallback to remote artworkURL (only works when online)
+        guard let url = artworkURL else {
+            print("🎨 [PlayerManager] No artworkURL available for id=\(episode.id)")
+            return
+        }
+
         Task.detached { [weak self] in
             guard let self else { return }
 
-            if let data = try? Data(contentsOf: url),
-               let image = UIImage(data: data) {
+            do {
+                let (data, _) = try await URLSession.shared.data(from: url)
+                guard let image = UIImage(data: data) else {
+                    print("⚠️ [PlayerManager] Could not decode remote artwork image")
+                    return
+                }
+
                 await MainActor.run {
+                    print("🎨 [PlayerManager] Loaded REMOTE artwork for id=\(episode.id)")
                     self.artworkImage = image
                     self.updateNowPlayingInfo()
                 }
+
+                // Cache for offline playback
+                await DownloadManager.shared.storeArtwork(id: episode.id, from: url)
+            } catch {
+                print("⚠️ [PlayerManager] Failed to load remote artwork: \(error)")
             }
         }
     }
 
-    // MARK: - Remote command center
+    // MARK: - Remote commands
 
     private func setupRemoteCommands() {
         let commandCenter = MPRemoteCommandCenter.shared()
 
-        // Remove any previous targets
+        // Clear previous
         commandCenter.playCommand.removeTarget(nil)
         commandCenter.pauseCommand.removeTarget(nil)
         commandCenter.togglePlayPauseCommand.removeTarget(nil)
@@ -298,31 +323,6 @@ final class PlayerManager: ObservableObject {
             self?.skip(by: -backwardSeconds)
             return .success
         }
-
-        // Optional: treat seek commands as discrete skips too
-        commandCenter.seekForwardCommand.isEnabled = true
-        commandCenter.seekForwardCommand.addTarget { [weak self] event in
-            guard let self,
-                  let seekEvent = event as? MPSeekCommandEvent else {
-                return .commandFailed
-            }
-            if seekEvent.type == .beginSeeking {
-                self.skip(by: forwardSeconds)
-            }
-            return .success
-        }
-
-        commandCenter.seekBackwardCommand.isEnabled = true
-        commandCenter.seekBackwardCommand.addTarget { [weak self] event in
-            guard let self,
-                  let seekEvent = event as? MPSeekCommandEvent else {
-                return .commandFailed
-            }
-            if seekEvent.type == .beginSeeking {
-                self.skip(by: -backwardSeconds)
-            }
-            return .success
-        }
     }
 
     // MARK: - Now Playing Info (lockscreen / CarPlay / Watch)
@@ -342,7 +342,6 @@ final class PlayerManager: ObservableObject {
             info[MPMediaItemPropertyPlaybackDuration] = duration
         }
 
-        // Attach artwork if loaded
         if let img = artworkImage {
             let artwork = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
             info[MPMediaItemPropertyArtwork] = artwork
