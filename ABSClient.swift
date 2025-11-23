@@ -4,6 +4,8 @@ struct ABSClient {
     let serverURL: URL
     let apiToken: String
 
+    // MARK: - Errors
+
     enum ABSError: Error, LocalizedError {
         case invalidResponse
         case httpStatus(Int)
@@ -30,7 +32,7 @@ struct ABSClient {
         let libraries: [Library]
     }
 
-    struct Library: Identifiable, Decodable {
+    struct Library: Identifiable, Decodable, Hashable {
         let id: String
         let name: String
         let mediaType: String
@@ -114,7 +116,7 @@ struct ABSClient {
         }
     }
 
-    // MARK: - Episode models (for media.episodes)
+    // MARK: - Episode models (for media.episodes / podcasts)
 
     struct Episode: Identifiable, Decodable {
         let id: String
@@ -289,6 +291,68 @@ struct ABSClient {
             }
             throw ABSError.decodingError(error)
         }
+    }
+
+    // MARK: - API: stream URL for a library item (audiobook, etc.)
+
+    /// Gets a playable direct stream URL for a library item (e.g. audiobook)
+    /// by calling /api/items/<id>/play and reading the "url" field.
+    func streamURLForLibraryItem(id libraryItemId: String) async throws -> URL {
+        let endpoint = serverURL.appending(path: "/api/items/\(libraryItemId)/play")
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "GET" // many setups allow GET; adjust to POST if needed
+        request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode)
+        else {
+            throw ABSError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
+
+        struct PlayResponse: Decodable {
+            let url: String
+        }
+
+        let decoded = try JSONDecoder().decode(PlayResponse.self, from: data)
+
+        guard let url = URL(string: decoded.url) else {
+            throw ABSError.invalidResponse
+        }
+
+        return url
+    }
+}
+
+// MARK: - URL helper for cover artwork
+
+extension URL {
+    /// Build the Audiobookshelf cover URL:
+    ///   <base>/api/items/<itemId>/cover?width=<width>&token=<token>
+    static func absCoverURL(
+        base: URL?,
+        itemId: String,
+        token: String?,
+        width: Int = 400
+    ) -> URL? {
+        guard
+            let base,
+            var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
+        else { return nil }
+
+        components.path = "/api/items/\(itemId)/cover"
+
+        var items: [URLQueryItem] = [
+            URLQueryItem(name: "width", value: "\(width)")
+        ]
+        if let token {
+            items.append(URLQueryItem(name: "token", value: token))
+        }
+        components.queryItems = items
+
+        return components.url
     }
 }
 

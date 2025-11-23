@@ -1,353 +1,513 @@
 import Foundation
 import AVFoundation
 import MediaPlayer
-import UIKit
+import SwiftUI
 import Combine
+import UIKit
 
-/// Central playback manager for podcasts + audiobooks.
+// MARK: - Types from your API layer
+
+/// Your Episode model from ABSClient
+typealias Episode = ABSClient.Episode
+typealias LibraryItem = ABSClient.LibraryItem
+
+// MARK: - Chapter model
+
+struct Chapter: Identifiable, Equatable {
+    let id = UUID()
+    let title: String
+    let startTime: TimeInterval
+}
+
+// MARK: - Progress storage
+
+/// Abstraction so you can swap in a different backend if desired.
+protocol EpisodeProgressStoring {
+    func saveProgress(
+        serverKey: String,
+        libraryItemId: String,
+        episodeId: String,
+        time: TimeInterval,
+        duration: TimeInterval
+    )
+
+    func loadProgress(
+        serverKey: String,
+        libraryItemId: String,
+        episodeId: String
+    ) -> (time: TimeInterval, duration: TimeInterval)?
+}
+
+/// Default implementation using UserDefaults
+final class UserDefaultsEpisodeProgressStore: EpisodeProgressStoring {
+    private let defaults: UserDefaults
+    private let keyPrefix = "EpisodeProgress"
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    private func key(serverKey: String, libraryItemId: String, episodeId: String) -> String {
+        "\(keyPrefix)|\(serverKey)|\(libraryItemId)|\(episodeId)"
+    }
+
+    func saveProgress(
+        serverKey: String,
+        libraryItemId: String,
+        episodeId: String,
+        time: TimeInterval,
+        duration: TimeInterval
+    ) {
+        let k = key(serverKey: serverKey, libraryItemId: libraryItemId, episodeId: episodeId)
+        let dict: [String: Any] = ["time": time, "duration": duration]
+        defaults.set(dict, forKey: k)
+    }
+
+    func loadProgress(
+        serverKey: String,
+        libraryItemId: String,
+        episodeId: String
+    ) -> (time: TimeInterval, duration: TimeInterval)? {
+        let k = key(serverKey: serverKey, libraryItemId: libraryItemId, episodeId: episodeId)
+        guard let dict = defaults.dictionary(forKey: k),
+              let time = dict["time"] as? TimeInterval,
+              let duration = dict["duration"] as? TimeInterval
+        else { return nil }
+        return (time, duration)
+    }
+}
+
+// MARK: - PlayerManager
+
+/// Central playback controller shared across the app.
+/// Inject once at the top-level and then use as an EnvironmentObject.
 final class PlayerManager: ObservableObject {
 
-    // MARK: - Published state for UI
+    // MARK: - Published state for SwiftUI
 
-    @Published var currentEpisode: ABSClient.Episode?
-    @Published var audioURL: URL?
-    @Published var artworkURL: URL?
+    /// Currently loaded library item (podcast / show).
+    @Published private(set) var currentLibraryItem: LibraryItem?
 
-    @Published var isPlaying: Bool = false
-    @Published var currentTime: Double = 0
-    @Published var duration: Double = 0
+    /// Currently loaded episode.
+    @Published private(set) var currentEpisode: Episode?
 
-    /// Whether something is loaded (used to show/hide mini-player)
-    @Published var isActive: Bool = false
+    /// Stream/file URL for currently loaded episode.
+    @Published private(set) var audioURL: URL?
 
-    /// Controls whether full-screen Now Playing sheet is shown
+    /// Resolved artwork URL (Audiobookshelf cover).
+    @Published private(set) var artworkURL: URL?
+
+    /// Controls presentation of the full-screen Now Playing sheet.
     @Published var isPresented: Bool = false
 
-    /// Playback speed (e.g. 1.0, 1.25, 1.5, 2.0)
-    @Published var playbackSpeed: Double = 1.0
+    /// Is the player currently playing?
+    @Published private(set) var isPlaying: Bool = false
 
-    // MARK: - Private
+    /// Current playback position (seconds).
+    @Published private(set) var currentTime: TimeInterval = 0
 
-    private var player: AVPlayer?
-    private var timeObserver: Any?
+    /// Duration of the current item (seconds).
+    @Published private(set) var duration: TimeInterval = 0
 
-    private let progressManager = PlaybackProgressManager.shared
+    /// Playback rate (1.0 = normal).
+    @Published var playbackRate: Float = 1.0 {
+        didSet {
+            player.rate = isPlaying ? playbackRate : 0
+            updateNowPlayingInfo()
+            
+        }
+    }
 
-    /// Cached artwork image used for lockscreen / CarPlay
-    private var artworkImage: UIImage?
+    /// Detected chapters for the current episode (if any).
+    @Published private(set) var chapters: [Chapter] = []
+
+    /// Index of the currently active chapter based on `currentTime`.
+    @Published private(set) var currentChapterIndex: Int?
+    
+    // MARK: - Library context for Home screen
+
+    /// All libraries the user can access (for the home screen picker).
+    @Published var availableLibraries: [ABSClient.Library] = []
+
+
+    // MARK: - Server context
+
+    /// Set this when you create the manager, e.g. from your ABSClient.
+    var serverURL: URL? {
+        didSet { updateServerKey() }
+    }
+
+    /// Optional (in case you later want authenticated stream URLs).
+    var apiToken: String?
+
+    private var serverKey: String = "default" // used in progress keys
+
+    // MARK: - Private internals
+
+    private let player = AVPlayer()
+    private var timeObserverToken: Any?
+
+    private let progressStore: EpisodeProgressStoring
+
+    // MARK: - Init / Deinit
+
+    init(progressStore: EpisodeProgressStoring = UserDefaultsEpisodeProgressStore()) {
+        self.progressStore = progressStore
+        configureAudioSession()
+        observePlayerTime()
+        setupRemoteCommandCenter()
+    }
+
+    deinit {
+        removeTimeObserver()
+    }
+
+    private func updateServerKey() {
+        serverKey = serverURL?.absoluteString ?? "default"
+    }
 
     // MARK: - Public API
 
-    func start(episode: ABSClient.Episode, audioURL: URL, artworkURL: URL?) {
-        print("▶️ [PlayerManager] start() id=\(episode.id)")
-
-        // Clean up any existing player
-        cleanupPlayer()
-
+    /// Load a new episode and optionally start playing it.
+    ///
+    /// - Parameters:
+    ///   - libraryItem: The podcast/show for context (title, artwork).
+    ///   - episode: The episode to play.
+    ///   - audioURL: Fully-resolved stream or file URL.
+    ///   - autoPlay: Start playing immediately.
+    ///   - presentNowPlaying: Show the Now Playing sheet.
+    ///   - resumeFromLastPosition: Seek to last saved position if available.
+    func start(
+        libraryItem: LibraryItem,
+        episode: Episode,
+        audioURL: URL,
+        artworkURL: URL? = nil,
+        autoPlay: Bool = true,
+        presentNowPlaying: Bool = true,
+        resumeFromLastPosition: Bool = true
+    ) {
+        currentLibraryItem = libraryItem
         currentEpisode = episode
         self.audioURL = audioURL
-        self.artworkURL = artworkURL
 
-        currentTime = 0
-        duration = 0
-        isPlaying = false
-        isActive = true
-        isPresented = true
-        playbackSpeed = max(playbackSpeed, 1.0)
-        artworkImage = nil
+        self.currentLibraryItem = libraryItem
+        self.currentEpisode = episode
+        self.audioURL = audioURL
 
-        // Prefer local downloaded copy if available
-        let finalURL: URL
-        if let local = DownloadManager.shared.localURL(for: episode.id) {
-            finalURL = local
-            print("📀 [PlayerManager] Using LOCAL audio at \(local.path)")
+        // Prefer explicit artworkURL if provided, otherwise derive from item id
+        if let explicitArtwork = artworkURL {
+            self.artworkURL = explicitArtwork
         } else {
-            finalURL = audioURL
-            print("🌐 [PlayerManager] Using REMOTE audio at \(audioURL)")
+            self.artworkURL = URL.absCoverURL(
+                base: serverURL,
+                itemId: libraryItem.id,
+                token: apiToken
+            )
         }
 
-        let item = AVPlayerItem(url: finalURL)
-        let player = AVPlayer(playerItem: item)
-        self.player = player
 
-        // Remember last played item
-        progressManager.saveLastPlayed(
-            episodeId: episode.id,
-            title: episode.title,
-            streamURLString: audioURL.absoluteString,
-            artworkURLString: artworkURL?.absoluteString
-        )
+        let playerItem = AVPlayerItem(url: audioURL)
+        player.replaceCurrentItem(with: playerItem)
 
-        // Observe time / duration, remote commands, etc.
-        setupPeriodicTimeObserver()
-        loadDuration()
-        setupRemoteCommands()
+        // Reset timing
+        currentTime = 0
+        duration = playerItem.asset.duration.seconds
+        chapters = []
+        currentChapterIndex = nil
 
-        // Load artwork (from cache first, then network)
-        loadArtworkForNowPlaying()
+        // Try to load chapters from the asset
+        loadChapters(from: playerItem.asset)
 
-        // Start playback
-        play()
-        updateNowPlayingInfo()
+        if presentNowPlaying {
+            isPresented = true
+        }
+
+        if resumeFromLastPosition,
+           let serverURL = serverURL,
+           let libraryId = libraryItem.libraryId,
+           let epId = currentEpisode?.id,
+           let saved = progressStore.loadProgress(
+                serverKey: serverURL.absoluteString,
+                libraryItemId: libraryId,
+                episodeId: epId
+            ),
+           saved.time > 0, saved.time < saved.duration
+        {
+            seek(to: saved.time, quietly: true)
+        }
+
+        if autoPlay {
+            play()
+        } else {
+            updateNowPlayingInfo()
+        }
     }
 
+    /// Play or resume.
     func play() {
-        guard let player = player else { return }
-        player.playImmediately(atRate: Float(playbackSpeed))
+        configureAudioSession()
+        player.play()
+        player.rate = playbackRate
         isPlaying = true
-        print("▶️ [PlayerManager] play()")
         updateNowPlayingInfo()
     }
 
+    /// Pause.
     func pause() {
-        player?.pause()
+        player.pause()
         isPlaying = false
-        print("⏸ [PlayerManager] pause()")
         updateNowPlayingInfo()
     }
 
+    /// Toggle play/pause.
     func togglePlayPause() {
         isPlaying ? pause() : play()
     }
 
-    func seek(to time: Double) {
-        guard let player = player else { return }
-        let clamped = max(time, 0)
-        let cmTime = CMTime(seconds: clamped, preferredTimescale: 600)
+    /// Seek to time (seconds).
+    func seek(to time: TimeInterval, quietly: Bool = false) {
+        let cmTime = CMTime(seconds: time, preferredTimescale: 600)
         player.seek(to: cmTime) { [weak self] _ in
             guard let self else { return }
-            self.currentTime = clamped
-            print("⏩ [PlayerManager] seek(to: \(clamped))")
-            self.updateNowPlayingInfo()
+            self.currentTime = time
+            if !quietly {
+                self.updateNowPlayingInfo()
+            }
+            self.updateCurrentChapter()
         }
     }
 
-    func skip(by seconds: Double) {
+    /// Skip forward by seconds.
+    func skipForward(seconds: TimeInterval) {
         seek(to: currentTime + seconds)
     }
 
-    func setSpeed(_ speed: Double) {
-        playbackSpeed = speed
-        if isPlaying {
-            player?.rate = Float(speed)
-        }
-        print("🎚 [PlayerManager] setSpeed(\(speed))")
-        updateNowPlayingInfo()
+    /// Skip backward by seconds.
+    func skipBackward(seconds: TimeInterval) {
+        seek(to: max(currentTime - seconds, 0))
     }
 
-    func stop() {
-        print("⏹ [PlayerManager] stop()")
-        cleanupPlayer()
+    /// Jump to a specific chapter index if available.
+    func jumpToChapter(at index: Int) {
+        guard chapters.indices.contains(index) else { return }
+        let chapter = chapters[index]
+        seek(to: chapter.startTime)
+    }
 
-        currentEpisode = nil
-        audioURL = nil
-        artworkURL = nil
-        artworkImage = nil
+    /// Stop playback and clear state.
+    func stop() {
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        isPlaying = false
 
         currentTime = 0
         duration = 0
-        isPlaying = false
-        isActive = false
+        chapters = []
+        currentChapterIndex = nil
+
+        currentEpisode = nil
+        currentLibraryItem = nil
+        audioURL = nil
+        artworkURL = nil
         isPresented = false
 
+        clearNowPlayingInfo()
+    }
+
+    // MARK: - Audio Session
+
+    private func configureAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .spokenAudio, options: [.allowBluetooth, .allowAirPlay])
+            try session.setActive(true)
+        } catch {
+            print("DEBUG: Failed to configure audio session: \(error)")
+        }
+    }
+
+    // MARK: - Time Observation & Progress Saving
+
+    private func observePlayerTime() {
+        let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
+
+        timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+            guard let self else { return }
+            self.currentTime = time.seconds
+
+            if let itemDuration = self.player.currentItem?.duration.seconds, itemDuration.isFinite {
+                self.duration = itemDuration
+            }
+
+            self.updateCurrentChapter()
+            self.saveProgressIfNeeded()
+            self.updateNowPlayingInfo(playbackOnly: true)
+        }
+    }
+
+    private func removeTimeObserver() {
+        if let token = timeObserverToken {
+            player.removeTimeObserver(token)
+            timeObserverToken = nil
+        }
+    }
+
+    private func saveProgressIfNeeded() {
+        guard
+            let serverURL,
+            let libraryId = currentLibraryItem?.libraryId,
+            let episodeId = currentEpisode?.id,
+            duration > 0
+        else { return }
+
+        progressStore.saveProgress(
+            serverKey: serverURL.absoluteString,
+            libraryItemId: libraryId,
+            episodeId: episodeId,
+            time: currentTime,
+            duration: duration
+        )
+    }
+
+    // MARK: - Chapters
+
+    private func loadChapters(from asset: AVAsset) {
+        let groups = asset.chapterMetadataGroups(bestMatchingPreferredLanguages: [])
+
+        guard !groups.isEmpty else { return }
+
+        var loaded: [Chapter] = []
+
+        for group in groups {
+            let timeRange = group.timeRange
+            let startSeconds = timeRange.start.seconds
+
+            let items = group.items
+            let titleItem = items.first(where: { $0.commonKey?.rawValue == "title" })
+            let title = titleItem?.stringValue ?? "Chapter \(loaded.count + 1)"
+
+            loaded.append(Chapter(title: title, startTime: startSeconds))
+        }
+
+        // Sort by start time just in case
+        loaded.sort { $0.startTime < $1.startTime }
+        DispatchQueue.main.async {
+            self.chapters = loaded
+            self.updateCurrentChapter()
+        }
+    }
+
+    private func updateCurrentChapter() {
+        guard !chapters.isEmpty else {
+            currentChapterIndex = nil
+            return
+        }
+
+        let time = currentTime
+        var index: Int?
+
+        for (i, chapter) in chapters.enumerated() {
+            let nextStart = chapters.indices.contains(i + 1) ? chapters[i + 1].startTime : duration
+            if time >= chapter.startTime && time < nextStart {
+                index = i
+                break
+            }
+        }
+
+        currentChapterIndex = index
+    }
+
+    // MARK: - Now Playing / Lock Screen
+
+    private func updateNowPlayingInfo(playbackOnly: Bool = false) {
+        guard let episode = currentEpisode else { return }
+
+        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+
+        if !playbackOnly {
+            info[MPMediaItemPropertyTitle] = episodeTitle(for: episode)
+            info[MPMediaItemPropertyAlbumTitle] = showTitle(for: episode)
+            info[MPNowPlayingInfoPropertyPlaybackRate] = playbackRate
+
+            if let artworkURL = artworkURL {
+                loadArtwork(from: artworkURL) { image in
+                    guard let image else { return }
+                    let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                    var currentInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+                    currentInfo[MPMediaItemPropertyArtwork] = artwork
+                    MPNowPlayingInfoCenter.default().nowPlayingInfo = currentInfo
+                }
+            }
+        }
+
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+        info[MPMediaItemPropertyPlaybackDuration] = duration
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackRate : 0
+
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+
+        print("DEBUG: Updating Now Playing – title=\(episodeTitle(for: episode)), time=\(currentTime), playing=\(isPlaying)")
+    }
+
+    private func clearNowPlayingInfo() {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
-    // MARK: - Private helpers
+    // MARK: - Remote Commands
 
-    private func cleanupPlayer() {
-        if let token = timeObserver {
-            player?.removeTimeObserver(token)
-            timeObserver = nil
-        }
-        player?.pause()
-        player = nil
-    }
-
-    private func setupPeriodicTimeObserver() {
-        guard let player = player else { return }
-
-        let interval = CMTime(seconds: 1, preferredTimescale: 2)
-        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) {
-            [weak self] time in
-            guard let self else { return }
-            let seconds = time.seconds
-            guard seconds.isFinite else { return }
-
-            self.currentTime = seconds
-            self.updateNowPlayingInfo()
-
-            if let episode = self.currentEpisode {
-                self.progressManager.saveProgress(
-                    episodeId: episode.id,
-                    currentTime: seconds,
-                    duration: self.duration
-                )
-            }
-        }
-    }
-
-    private func loadDuration() {
-        guard let player = player,
-              let item = player.currentItem else { return }
-
-        let asset = item.asset
-
-        Task {
-            do {
-                let time = try await asset.load(.duration)
-                let durationSeconds = time.seconds
-                guard durationSeconds.isFinite else { return }
-
-                await MainActor.run {
-                    self.duration = durationSeconds
-                    print("⏱ [PlayerManager] duration=\(durationSeconds)")
-                    self.updateNowPlayingInfo()
-                }
-            } catch {
-                print("⚠️ [PlayerManager] Failed to load duration: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    // MARK: - Artwork loading for lockscreen / CarPlay
-
-    private func loadArtworkForNowPlaying() {
-        guard let episode = currentEpisode else { return }
-
-        // 1) Cached artwork on disk?
-        if let cached = DownloadManager.shared.cachedArtworkImage(for: episode.id) {
-            print("🎨 [PlayerManager] Using CACHED artwork for id=\(episode.id)")
-            self.artworkImage = cached
-            self.updateNowPlayingInfo()
-            return
-        } else {
-            print("🎨 [PlayerManager] No cached artwork for id=\(episode.id), will try remote")
-        }
-
-        // 2) Fallback to remote artworkURL (only works when online)
-        guard let url = artworkURL else {
-            print("🎨 [PlayerManager] No artworkURL available for id=\(episode.id)")
-            return
-        }
-
-        Task.detached { [weak self] in
-            guard let self else { return }
-
-            do {
-                let (data, _) = try await URLSession.shared.data(from: url)
-                guard let image = UIImage(data: data) else {
-                    print("⚠️ [PlayerManager] Could not decode remote artwork image")
-                    return
-                }
-
-                await MainActor.run {
-                    print("🎨 [PlayerManager] Loaded REMOTE artwork for id=\(episode.id)")
-                    self.artworkImage = image
-                    self.updateNowPlayingInfo()
-                }
-
-                // Cache for offline playback
-                await DownloadManager.shared.storeArtwork(id: episode.id, from: url)
-            } catch {
-                print("⚠️ [PlayerManager] Failed to load remote artwork: \(error)")
-            }
-        }
-    }
-
-    // MARK: - Remote commands
-
-    private func setupRemoteCommands() {
+    private func setupRemoteCommandCenter() {
         let commandCenter = MPRemoteCommandCenter.shared()
 
-        // Clear previous
-        commandCenter.playCommand.removeTarget(nil)
-        commandCenter.pauseCommand.removeTarget(nil)
-        commandCenter.togglePlayPauseCommand.removeTarget(nil)
-        commandCenter.skipBackwardCommand.removeTarget(nil)
-        commandCenter.skipForwardCommand.removeTarget(nil)
-        commandCenter.nextTrackCommand.removeTarget(nil)
-        commandCenter.previousTrackCommand.removeTarget(nil)
-        commandCenter.seekForwardCommand.removeTarget(nil)
-        commandCenter.seekBackwardCommand.removeTarget(nil)
-
-        let backwardSeconds: Double = 15
-        let forwardSeconds: Double = 30
-
-        // Play
-        commandCenter.playCommand.isEnabled = true
         commandCenter.playCommand.addTarget { [weak self] _ in
             self?.play()
             return .success
         }
 
-        // Pause
-        commandCenter.pauseCommand.isEnabled = true
         commandCenter.pauseCommand.addTarget { [weak self] _ in
             self?.pause()
             return .success
         }
 
-        // Toggle
-        commandCenter.togglePlayPauseCommand.isEnabled = true
         commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
             self?.togglePlayPause()
             return .success
         }
 
-        // Skip backward
-        commandCenter.skipBackwardCommand.isEnabled = true
-        commandCenter.skipBackwardCommand.preferredIntervals = [NSNumber(value: backwardSeconds)]
-        commandCenter.skipBackwardCommand.addTarget { [weak self] _ in
-            self?.skip(by: -backwardSeconds)
-            return .success
-        }
-
-        // Skip forward
-        commandCenter.skipForwardCommand.isEnabled = true
-        commandCenter.skipForwardCommand.preferredIntervals = [NSNumber(value: forwardSeconds)]
+        commandCenter.skipForwardCommand.preferredIntervals = [30]
         commandCenter.skipForwardCommand.addTarget { [weak self] _ in
-            self?.skip(by: forwardSeconds)
+            self?.skipForward(seconds: 30)
             return .success
         }
 
-        // Map next/previous to skips (AirPods, CarPlay)
-        commandCenter.nextTrackCommand.isEnabled = true
-        commandCenter.nextTrackCommand.addTarget { [weak self] _ in
-            self?.skip(by: forwardSeconds)
-            return .success
-        }
-
-        commandCenter.previousTrackCommand.isEnabled = true
-        commandCenter.previousTrackCommand.addTarget { [weak self] _ in
-            self?.skip(by: -backwardSeconds)
+        commandCenter.skipBackwardCommand.preferredIntervals = [15]
+        commandCenter.skipBackwardCommand.addTarget { [weak self] _ in
+            self?.skipBackward(seconds: 15)
             return .success
         }
     }
 
-    // MARK: - Now Playing Info (lockscreen / CarPlay / Watch)
+    // MARK: - Helpers
 
-    private func updateNowPlayingInfo() {
-        guard let episode = currentEpisode else { return }
+    private func episodeTitle(for episode: Episode) -> String {
+        episode.title
+    }
 
-        var info: [String: Any] = [
-            MPMediaItemPropertyTitle: episode.title,
-            MPMediaItemPropertyArtist: "Audiobookshelf",
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? playbackSpeed : 0.0,
-            MPMediaItemPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue
-        ]
-
-        if duration > 0 {
-            info[MPMediaItemPropertyPlaybackDuration] = duration
+    private func showTitle(for episode: Episode) -> String {
+        // Use the parent library item's metadata title if available.
+        if let title = currentLibraryItem?.media?.metadata?.title, !title.isEmpty {
+            return title
         }
+        return "Podcast"
+    }
 
-        if let img = artworkImage {
-            let artwork = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
-            info[MPMediaItemPropertyArtwork] = artwork
-        }
-
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    private func loadArtwork(from url: URL, completion: @escaping (UIImage?) -> Void) {
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            guard let data, let image = UIImage(data: data) else {
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+            DispatchQueue.main.async { completion(image) }
+        }.resume()
     }
 }
 

@@ -1,0 +1,22 @@
+import Foundation
+
+extension URL {
+    /// Build a proper cover URL from a base server URL + a coverPath returned by ABS.
+    /// - If coverPath is already an absolute URL, just use it.
+    /// - Otherwise treat it as a relative URL to the base.
+    static func absCoverURL(base: URL?, coverPath: String?) -> URL? {
+        guard let coverPath else { return nil }
+
+        // Already a full URL?
+        if let url = URL(string: coverPath), url.scheme != nil {
+            return url
+        }
+
+        // Relative to base server URL
+        if let base {
+            return URL(string: coverPath, relativeTo: base)
+        }
+
+        return nil
+    }
+}

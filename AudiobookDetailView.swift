@@ -1,346 +1,138 @@
 import SwiftUI
 
 struct AudiobookDetailView: View {
-    let audiobook: ABSClient.LibraryItem
-    let serverURL: String
-    let apiToken: String
+    let item: ABSClient.LibraryItem
+    let client: ABSClient
 
     @EnvironmentObject var playerManager: PlayerManager
 
-    @ObservedObject private var downloadManager = DownloadManager.shared
-    private let progressManager = PlaybackProgressManager.shared
-
-    @State private var isDownloading: Bool = false
+    @State private var loading = false
     @State private var errorMessage: String?
-    @State private var isLoadingDetails: Bool = false
-
-    /// First audio file inode for this audiobook (from /api/items/{id}?expanded=1)
-    @State private var audioFileIno: String?
-
-    private var audiobookCoverURL: URL? {
-        guard let base = URL(string: serverURL) else { return nil }
-        return base.appending(path: "/api/items/\(audiobook.id)/cover")
-    }
-
-    /// Preferred stream URL for this audiobook:
-    /// 1. If we have `ino`, use: /api/items/{id}/file/{ino}?token=...
-    /// 2. Fallback to /s/item/{id}?token=... if ino is missing
-    private var audiobookStreamURL: URL? {
-        guard let base = URL(string: serverURL) else { return nil }
-
-        if let ino = audioFileIno {
-            var components = URLComponents(
-                url: base.appending(path: "/api/items/\(audiobook.id)/file/\(ino)"),
-                resolvingAgainstBaseURL: false
-            )
-            components?.queryItems = [
-                URLQueryItem(name: "token", value: apiToken)
-            ]
-            let url = components?.url
-            print("🎵 [AudiobookDetail] Using /api/items file URL: \(url?.absoluteString ?? "nil")")
-            return url
-        }
-
-        // Fallback (may 404 on some ABS setups, but better than nothing)
-        var components = URLComponents(
-            url: base.appending(path: "/s/item/\(audiobook.id)"),
-            resolvingAgainstBaseURL: false
-        )
-        components?.queryItems = [
-            URLQueryItem(name: "token", value: apiToken)
-        ]
-        let url = components?.url
-        print("🎵 [AudiobookDetail] Fallback /s/item URL: \(url?.absoluteString ?? "nil")")
-        return url
-    }
-
-    private var hasProgress: Bool {
-        progressManager.loadProgress(for: audiobook.id) != nil
-    }
 
     var body: some View {
-        List {
-            // Header
-            Section {
-                VStack(spacing: 16) {
-                    // Cover
-                    if let artworkURL = audiobookCoverURL {
-                        AsyncImage(url: artworkURL) { phase in
-                            switch phase {
-                            case .empty:
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 16)
-                                        .fill(Color.gray.opacity(0.2))
-                                        .frame(width: 160, height: 160)
-                                    ProgressView()
-                                }
-                            case .success(let image):
-                                image
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 160, height: 160)
-                                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                                    .shadow(color: .black.opacity(0.2), radius: 12, x: 0, y: 6)
-                            case .failure:
-                                placeholderArtwork
-                            @unknown default:
-                                placeholderArtwork
-                            }
-                        }
-                    } else {
-                        placeholderArtwork
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
 
-                    VStack(spacing: 8) {
-                        Text(audiobook.displayTitle)
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .multilineTextAlignment(.center)
+                // Cover
+                if let coverURL = URL.absCoverURL(
+                    base: client.serverURL,
+                    itemId: item.id,
+                    token: client.apiToken,
+                    width: 400
+                ) {
+                    AsyncImage(url: coverURL) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img.resizable()
+                                .scaledToFit()
+                                .frame(maxWidth: 240)
+                                .cornerRadius(12)
+                                .shadow(radius: 4)
 
-                        if let author = audiobook.media?.metadata?.author {
-                            Text(author)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
+                        case .failure(_):
+                            Color.gray.opacity(0.2)
+                                .frame(width: 240, height: 240)
+                                .cornerRadius(12)
 
-                        // tags
-                        let tags = audiobook.displayTags
-                        if !tags.isEmpty {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    ForEach(tags, id: \.self) { tag in
-                                        Text(tag)
-                                            .font(.caption)
-                                            .fontWeight(.medium)
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 6)
-                                            .background(
-                                                Capsule()
-                                                    .fill(Color.green.opacity(0.15))
-                                            )
-                                            .foregroundStyle(.green)
-                                    }
-                                }
-                            }
+                        default:
+                            ProgressView()
+                                .frame(width: 240, height: 240)
                         }
                     }
-
-                    if let desc = audiobook.displayDescription, !desc.isEmpty {
-                        Text(desc)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.leading)
-                            .lineLimit(8)
-                            .padding(.top, 4)
-                    }
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-            }
 
-            // Actions: play + download
-            Section {
-                if isLoadingDetails {
+                // Title
+                Text(item.displayTitle)
+                    .font(.title2)
+                    .bold()
+
+                // Description
+                if let desc = item.displayDescription, !desc.isEmpty {
+                    Text(desc)
+                        .foregroundStyle(.secondary)
+                }
+
+                Divider().padding(.vertical, 8)
+
+                // Error output
+                if let err = errorMessage {
+                    Text(err)
+                        .foregroundColor(.red)
+                }
+
+                // Play button
+                Button(action: loadAndPlay) {
                     HStack {
-                        ProgressView()
-                        Text("Loading audiobook details…")
+                        Image(systemName: "play.fill")
+                        Text("Play Audiobook")
                     }
-                } else if let streamURL = audiobookStreamURL {
-                    Button {
-                        playAudiobook(streamURL: streamURL)
-                    } label: {
-                        HStack {
-                            Image(systemName: "play.fill")
-                            Text(hasProgress ? "Continue Audiobook" : "Play Audiobook")
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.blue)
-                        .foregroundStyle(.white)
-                        .cornerRadius(10)
-                    }
-                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(10)
+                }
+                .disabled(loading)
 
-                    Button {
-                        Task {
-                            await toggleDownload(streamURL: streamURL)
-                        }
-                    } label: {
-                        HStack {
-                            if isDownloading {
-                                ProgressView()
-                                    .scaleEffect(0.9)
-                            } else {
-                                Image(systemName: downloadManager.isDownloaded(id: audiobook.id) ? "trash" : "arrow.down.circle")
-                            }
-                            Text(downloadManager.isDownloaded(id: audiobook.id) ? "Remove Download" : "Download for Offline Listening")
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.secondary.opacity(0.15))
-                        .foregroundStyle(.primary)
-                        .cornerRadius(10)
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    Text("Unable to build audiobook stream URL.")
-                        .foregroundStyle(.red)
+                if loading {
+                    ProgressView("Loading audio…")
+                        .padding(.top, 4)
                 }
 
-                if let progress = progressManager.loadProgress(for: audiobook.id), !progress.isCompleted {
-                    HStack {
-                        Image(systemName: "clock")
-                            .foregroundStyle(.secondary)
-                        Text("\(Int(progress.progressPercentage))% complete • \(progressManager.formatTime(progress.currentTime)) of \(progressManager.formatTime(progress.duration))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                Spacer()
             }
-
-            // Metadata
-            Section(header: Text("Details")) {
-                if let author = audiobook.media?.metadata?.author {
-                    LabeledContent("Author", value: author)
-                }
-
-                if let releaseDate = audiobook.media?.metadata?.releaseDate {
-                    LabeledContent("Release Date", value: releaseDate)
-                }
-
-                if let addedAt = audiobook.media?.metadata?.addedAt {
-                    LabeledContent("Added", value: addedAt)
-                }
-            }
-
-            if let errorMessage {
-                Section {
-                    Text(errorMessage)
-                        .foregroundStyle(.red)
-                        .font(.subheadline)
-                }
-            }
+            .padding()
         }
-        .listStyle(.insetGrouped)
-        .navigationTitle(audiobook.displayTitle)
+        .navigationTitle(item.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            loadAudiobookDetails()
-        }
     }
 
-    private var placeholderArtwork: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.gray.opacity(0.2))
-                .frame(width: 160, height: 160)
-            Image(systemName: "book.closed")
-                .font(.system(size: 64))
-                .foregroundStyle(.gray)
-        }
-    }
+    // MARK: - Load & Play Audiobook
 
-    // MARK: - Actions
-
-    private func playAudiobook(streamURL: URL) {
-        let episode = ABSClient.Episode(
-            id: audiobook.id,
-            title: audiobook.displayTitle,
-            description: audiobook.displayDescription,
-            pubDate: nil,
-            publishedAt: nil,
-            enclosure: ABSClient.Episode.Enclosure(
-                url: streamURL.absoluteString,
-                type: "audio/mpeg",
-                length: nil
-            )
-        )
-
-        playerManager.start(
-            episode: episode,
-            audioURL: streamURL,
-            artworkURL: audiobookCoverURL
-        )
-    }
-
-    private func toggleDownload(streamURL: URL) async {
-        if downloadManager.isDownloaded(id: audiobook.id) {
-            downloadManager.delete(id: audiobook.id)
-            return
-        }
-
-        isDownloading = true
-        defer { isDownloading = false }
-
-        do {
-            try await downloadManager.download(id: audiobook.id, from: streamURL)
-            if let cover = audiobookCoverURL {
-                await downloadManager.storeArtwork(id: audiobook.id, from: cover)
-            }
-        } catch {
-            print("⚠️ [AudiobookDetail] Download failed for \(audiobook.id): \(error)")
-            errorMessage = "Download failed: \(error.localizedDescription)"
-        }
-    }
-
-    // MARK: - Load ABS details to get ino
-
-    private func loadAudiobookDetails() {
-        guard let url = URL(string: serverURL), !apiToken.isEmpty else {
-            errorMessage = "Missing server URL or API token."
-            return
-        }
-
-        isLoadingDetails = true
+    private func loadAndPlay() {
+        loading = true
         errorMessage = nil
 
         Task {
             do {
-                var components = URLComponents(
-                    url: url.appending(path: "/api/items/\(audiobook.id)"),
-                    resolvingAgainstBaseURL: false
+                // Request the stream URL
+                let playURL = try await client.streamURLForLibraryItem(id: item.id)
+
+                // Build a fake Episode wrapper (Audiobookshelf doesn't use podcast episodes)
+                let episode = ABSClient.Episode(
+                    id: item.id,
+                    title: item.displayTitle,
+                    description: item.displayDescription,
+                    pubDate: nil,
+                    publishedAt: nil,
+                    enclosure: .init(
+                        url: playURL.absoluteString,
+                        type: "audio/mpeg",
+                        length: nil
+                    )
                 )
-                components?.queryItems = [
-                    URLQueryItem(name: "expanded", value: "1")
-                ]
 
-                guard let detailURL = components?.url else {
-                    throw URLError(.badURL)
-                }
+                // Start playback
+                playerManager.start(
+                    libraryItem: item,
+                    episode: episode,
+                    audioURL: playURL,
+                    artworkURL: URL.absCoverURL(
+                        base: client.serverURL,
+                        itemId: item.id,
+                        token: client.apiToken
+                    ),
+                    autoPlay: true,
+                    presentNowPlaying: true,
+                    resumeFromLastPosition: true
+                )
 
-                var request = URLRequest(url: detailURL)
-                request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
-
-                let (data, _) = try await URLSession.shared.data(for: request)
-
-                // Parse just enough JSON to get media.audioFiles[0].ino
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let media = json["media"] as? [String: Any],
-                   let audioFiles = media["audioFiles"] as? [[String: Any]],
-                   let firstFile = audioFiles.first,
-                   let inoAny = firstFile["ino"] {
-
-                    // ino might be String or Number, normalize
-                    let inoString = String(describing: inoAny)
-
-                    await MainActor.run {
-                        self.audioFileIno = inoString
-                        print("✅ [AudiobookDetail] Found audio file ino=\(inoString) for id=\(audiobook.id)")
-                        self.isLoadingDetails = false
-                    }
-                } else {
-                    await MainActor.run {
-                        print("⚠️ [AudiobookDetail] Could not parse audioFiles for id=\(audiobook.id)")
-                        self.isLoadingDetails = false
-                    }
-                }
             } catch {
-                await MainActor.run {
-                    print("⚠️ [AudiobookDetail] Failed to load details for id=\(audiobook.id): \(error)")
-                    self.errorMessage = error.localizedDescription
-                    self.isLoadingDetails = false
-                }
+                errorMessage = error.localizedDescription
             }
+
+            loading = false
         }
     }
 }

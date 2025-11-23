@@ -244,6 +244,7 @@ struct PodcastDetailView: View {
               let url = URL(string: urlString) else { return }
 
         playerManager.start(
+            libraryItem: podcast,
             episode: episode,
             audioURL: url,
             artworkURL: podcastCoverURL

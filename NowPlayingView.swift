@@ -2,59 +2,96 @@ import SwiftUI
 
 struct NowPlayingView: View {
     @EnvironmentObject var playerManager: PlayerManager
+    @Environment(\.dismiss) private var dismiss
 
-    // simple local speeds – we can wire these to your Settings later if you want
-    private let availableSpeeds: [Double] = [0.75, 1.0, 1.25, 1.5, 2.0]
+    // Customize your skip intervals here
+    private let skipForwardInterval: TimeInterval = 30
+    private let skipBackwardInterval: TimeInterval = 15
 
     var body: some View {
-        VStack(spacing: 24) {
+        ZStack {
+            // Background blur-ish color
+            Color(.systemBackground)
+                .ignoresSafeArea()
+
             if let episode = playerManager.currentEpisode {
-                // Artwork
-                artworkSection
+                VStack(spacing: 16) {
+                    header(episode: episode)
 
-                // Title
-                Text(episode.title)
-                    .font(.title2)
-                    .fontWeight(.bold)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
+                    Spacer().frame(height: 8)
 
-                // Progress
-                progressSection
+                    artworkView()
 
-                // Transport controls
-                controlsSection
+                    episodeTitles(episode: episode)
 
-                // Speed controls
-                speedSection
+                    progressSection()
+
+                    playbackControls()
+
+                    playbackRateButton()
+
+                    chaptersSection()
+
+                    Spacer(minLength: 12)
+                }
+                .padding(.horizontal)
+                .padding(.top, 12)
             } else {
-                Spacer()
-                Text("Nothing is playing")
-                    .foregroundStyle(.secondary)
-                Spacer()
+                // Fallback if nothing is loaded
+                VStack(spacing: 16) {
+                    Text("Nothing Playing")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    Text("Select an episode to start playback.")
+                        .foregroundColor(.secondary)
+
+                    Button("Close") {
+                        dismiss()
+                    }
+                    .padding(.top, 8)
+                }
             }
         }
-        .padding()
-        .presentationDetents([.medium, .large])
+    }
+
+    // MARK: - Header
+
+    private func header(episode: Episode) -> some View {
+        HStack {
+            Text("Now Playing")
+                .font(.headline)
+
+            Spacer()
+
+            Button {
+                playerManager.isPresented = false
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.down")
+                    .imageScale(.large)
+                    .padding(8)
+            }
+            .accessibilityLabel("Dismiss")
+        }
     }
 
     // MARK: - Artwork
 
-    private var artworkSection: some View {
+    private func artworkView() -> some View {
         Group {
             if let url = playerManager.artworkURL {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case .empty:
                         ZStack {
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(Color.gray.opacity(0.2))
+                            Rectangle()
+                                .fill(Color.secondary.opacity(0.1))
                             ProgressView()
                         }
                     case .success(let image):
                         image
                             .resizable()
-                            .scaledToFill()
+                            .scaledToFit()
                     case .failure:
                         placeholderArtwork
                     @unknown default:
@@ -65,26 +102,50 @@ struct NowPlayingView: View {
                 placeholderArtwork
             }
         }
-        .frame(width: 220, height: 220)
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        .shadow(radius: 8)
-        .padding(.top, 32)
+        .frame(maxWidth: 340, maxHeight: 340)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(radius: 10)
     }
 
     private var placeholderArtwork: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.gray.opacity(0.2))
-            Image(systemName: "headphones")
-                .font(.system(size: 64))
-                .foregroundStyle(.gray)
+            Rectangle()
+                .fill(Color.secondary.opacity(0.15))
+            Image(systemName: "waveform.circle")
+                .resizable()
+                .scaledToFit()
+                .padding(40)
+                .foregroundColor(.secondary)
         }
     }
 
-    // MARK: - Progress
+    // MARK: - Titles
 
-    private var progressSection: some View {
-        VStack(spacing: 8) {
+    private func episodeTitles(episode: Episode) -> some View {
+        VStack(spacing: 4) {
+            Text(episode.title)
+                .font(.title3)
+                .fontWeight(.semibold)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+
+            if let showTitle = playerManager.currentLibraryItem?.media?.metadata?.title,
+               !showTitle.isEmpty {
+                Text(showTitle)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 8)
+    }
+
+    // MARK: - Progress / Scrubber
+
+    private func progressSection() -> some View {
+        VStack(spacing: 4) {
             Slider(
                 value: Binding(
                     get: { playerManager.currentTime },
@@ -92,99 +153,179 @@ struct NowPlayingView: View {
                         playerManager.seek(to: newValue)
                     }
                 ),
-                in: 0...max(playerManager.duration, 1.0)
+                in: 0...(playerManager.duration > 0 ? playerManager.duration : 1),
+                step: 1
             )
-            .tint(.blue)
 
             HStack {
                 Text(formatTime(playerManager.currentTime))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
+
                 Spacer()
-                Text(formatTime(playerManager.duration))
+
+                let remaining = max(playerManager.duration - playerManager.currentTime, 0)
+                Text("-" + formatTime(remaining))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal)
-    }
-
-    // MARK: - Transport
-
-    private var controlsSection: some View {
-        HStack(spacing: 40) {
-            Button {
-                playerManager.skip(by: -15)
-            } label: {
-                Image(systemName: "gobackward.15")
-                    .font(.title2)
-            }
-
-            Button {
-                playerManager.togglePlayPause()
-            } label: {
-                Image(systemName: playerManager.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 60))
-            }
-
-            Button {
-                playerManager.skip(by: 30)
-            } label: {
-                Image(systemName: "goforward.30")
-                    .font(.title2)
-            }
-        }
-        .padding(.top, 12)
-    }
-
-    // MARK: - Speed control
-
-    private var speedSection: some View {
-        VStack(spacing: 8) {
-            Text("Playback Speed")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 8) {
-                ForEach(availableSpeeds, id: \.self) { speed in
-                    Button {
-                        playerManager.setSpeed(speed)
-                    } label: {
-                        Text(String(format: "%.2gx", speed))
-                            .font(.caption)
-                            .fontWeight(speed == playerManager.playbackSpeed ? .bold : .regular)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(
-                                Capsule()
-                                    .fill(
-                                        speed == playerManager.playbackSpeed
-                                        ? Color.blue.opacity(0.2)
-                                        : Color.gray.opacity(0.15)
-                                    )
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
+                    .foregroundColor(.secondary)
             }
         }
         .padding(.top, 8)
     }
 
-    // MARK: - Helpers
+    private func formatTime(_ time: TimeInterval) -> String {
+        guard time.isFinite else { return "--:--" }
 
-    private func formatTime(_ seconds: Double) -> String {
-        guard seconds.isFinite && seconds >= 0 else { return "0:00" }
-        let total = Int(seconds)
-        let hours = total / 3600
-        let minutes = (total % 3600) / 60
-        let secs = total % 60
+        let totalSeconds = Int(time.rounded())
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
 
         if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
         } else {
-            return String(format: "%d:%02d", minutes, secs)
+            return String(format: "%d:%02d", minutes, seconds)
         }
+    }
+
+    // MARK: - Playback Controls
+
+    private func playbackControls() -> some View {
+        HStack(spacing: 40) {
+            Button {
+                playerManager.skipBackward(seconds: skipBackwardInterval)
+            } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "gobackward.15")
+                        .font(.system(size: 26, weight: .semibold))
+                    Text("\(Int(skipBackwardInterval))s")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                playerManager.togglePlayPause()
+            } label: {
+                Image(systemName: playerManager.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 56, weight: .regular))
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                playerManager.skipForward(seconds: skipForwardInterval)
+            } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "goforward.30")
+                        .font(.system(size: 26, weight: .semibold))
+                    Text("\(Int(skipForwardInterval))s")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.top, 12)
+    }
+
+    // MARK: - Playback Rate
+
+    private func playbackRateButton() -> some View {
+        // Cycle through common speeds
+        let speeds: [Float] = [0.8, 1.0, 1.25, 1.5, 2.0]
+        let current = playerManager.playbackRate
+        let nextSpeed: Float = {
+            guard let idx = speeds.firstIndex(of: current) else {
+                return 1.0
+            }
+            let nextIndex = (idx + 1) % speeds.count
+            return speeds[nextIndex]
+        }()
+
+        return Button {
+            playerManager.playbackRate = nextSpeed
+        } label: {
+            Text(String(format: "%.2gx", current))
+                .font(.caption)
+                .fontWeight(.semibold)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule()
+                        .fill(Color.secondary.opacity(0.15))
+                )
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 4)
+    }
+
+    // MARK: - Chapters
+
+    private func chaptersSection() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !playerManager.chapters.isEmpty {
+                HStack {
+                    Text("Chapters")
+                        .font(.headline)
+                    Spacer()
+                }
+
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(Array(playerManager.chapters.enumerated()), id: \.element.id) { index, chapter in
+                            chapterRow(chapter: chapter, index: index)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .frame(maxHeight: 200)
+            } else {
+                // Optional: show nothing or a subtle message
+                EmptyView()
+            }
+        }
+        .padding(.top, 12)
+    }
+
+    private func chapterRow(chapter: Chapter, index: Int) -> some View {
+        let isCurrent = (index == playerManager.currentChapterIndex)
+
+        return Button {
+            playerManager.jumpToChapter(at: index)
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(chapter.title)
+                        .font(.subheadline)
+                        .lineLimit(1)
+                    Text(formatTime(chapter.startTime))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                if isCurrent {
+                    Text("Now")
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(Color.accentColor.opacity(0.15))
+                        )
+                }
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isCurrent ? Color.accentColor.opacity(0.12) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
