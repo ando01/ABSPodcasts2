@@ -12,7 +12,7 @@ struct EpisodeDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                
+
                 // Artwork
                 if let cover = URL.absCoverURL(
                     base: client.serverURL,
@@ -27,62 +27,59 @@ struct EpisodeDetailView: View {
                                 .resizable()
                                 .scaledToFit()
                                 .frame(maxWidth: 240)
-                                .cornerRadius(12)
                         case .failure(_):
                             Color.gray.opacity(0.3)
                                 .frame(width: 240, height: 240)
-                                .cornerRadius(12)
                         default:
                             ProgressView()
-                                .frame(width: 240, height: 240)
                         }
                     }
                 }
-                
+
                 // Title
                 Text(episode.title)
                     .font(.title2)
                     .bold()
-                
-                // 👉 Play button now lives *above* the description
+
+                // Play button ABOVE description
                 Button {
                     Task { await play() }
                 } label: {
-                    HStack {
-                        Image(systemName: "play.fill")
-                        Text("Play Episode")
-                            .fontWeight(.semibold)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding()
+                    Label("Play Episode", systemImage: "play.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(20)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(loading)
-                
-                // Loading state under the button
+                .buttonStyle(.plain)
+
                 if loading {
                     ProgressView("Loading…")
                 }
-                
-                // Description
-                if let desc = episode.description {
-                    Text(desc)
-                        .foregroundStyle(.secondary)
-                }
-                
-                // Error (if any)
+
                 if let errorMessage {
                     Text(errorMessage)
                         .foregroundColor(.red)
                 }
-                
-                Spacer(minLength: 16)
+
+                // Cleaned-up description (no HTML tags)
+                if let desc = episode.description,
+                   !desc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(plainText(fromHTML: desc))
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.leading)
+                }
             }
             .padding()
         }
         .navigationTitle("Episode")
         .navigationBarTitleDisplayMode(.inline)
     }
+    
+    // MARK: - Playback
     
     private func play() async {
         loading = true
@@ -113,6 +110,26 @@ struct EpisodeDetailView: View {
         }
         
         loading = false
+    }
+
+    // MARK: - HTML → plain text
+
+    private func plainText(fromHTML html: String) -> String {
+        guard let data = html.data(using: .utf8) else { return html }
+        do {
+            let attributed = try NSAttributedString(
+                data: data,
+                options: [
+                    .documentType: NSAttributedString.DocumentType.html,
+                    .characterEncoding: String.Encoding.utf8.rawValue
+                ],
+                documentAttributes: nil
+            )
+            return attributed.string
+        } catch {
+            // If parsing fails, just show the original
+            return html
+        }
     }
 }
 

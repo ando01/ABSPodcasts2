@@ -11,11 +11,23 @@ struct EpisodesTabView: View {
         var id: String { episode.id }
     }
 
+    enum DateFilter: CaseIterable {
+        case descending
+        case ascending
+
+        var displayName: String {
+            switch self {
+            case .descending: return "Date Descending"
+            case .ascending:  return "Date Ascending"
+            }
+        }
+    }
+
     @State private var episodes: [EpisodeWithPodcast] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
 
-    @State private var selectedDateFilter: DateFilter = .all
+    @State private var selectedDateFilter: DateFilter = .descending
     @State private var selectedCategory: String? = nil
     @State private var selectedTag: String? = nil
 
@@ -30,25 +42,11 @@ struct EpisodesTabView: View {
         return Array(Set(tags)).sorted()
     }
 
-    // Apply filters
+    // Apply filters + sort
     private var filteredEpisodes: [EpisodeWithPodcast] {
-        episodes.filter { pair in
-            let ep = pair.episode
+        // Category + tag filters
+        let filtered = episodes.filter { pair in
             let item = pair.podcast
-
-            // Date
-            if let d = ep.bestDate {
-                switch selectedDateFilter {
-                case .all:
-                    break
-                case .last7Days:
-                    let cutoff = Calendar.current.date(byAdding: .day, value: -7, to: Date())!
-                    if d < cutoff { return false }
-                case .last30Days:
-                    let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
-                    if d < cutoff { return false }
-                }
-            }
 
             // Category (from podcast tags)
             if let selectedCategory {
@@ -66,8 +64,20 @@ struct EpisodesTabView: View {
 
             return true
         }
-        // Newest first
-        .sorted { ($0.episode.bestDate ?? .distantPast) > ($1.episode.bestDate ?? .distantPast) }
+
+        // Sort by date according to selected order
+        switch selectedDateFilter {
+        case .descending:
+            return filtered.sorted {
+                ($0.episode.bestDate ?? .distantPast) >
+                ($1.episode.bestDate ?? .distantPast)
+            }
+        case .ascending:
+            return filtered.sorted {
+                ($0.episode.bestDate ?? .distantFuture) <
+                ($1.episode.bestDate ?? .distantFuture)
+            }
+        }
     }
 
     var body: some View {
@@ -153,7 +163,7 @@ struct EpisodesTabView: View {
     private var filterBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
-                // Date
+                // Date sort
                 Menu {
                     Picker("Date", selection: $selectedDateFilter) {
                         ForEach(DateFilter.allCases, id: \.self) { filter in
