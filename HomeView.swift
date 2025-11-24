@@ -80,7 +80,10 @@ struct HomeView: View {
                                                 Text(item.displayTitle)
                                                     .font(.caption)
                                                     .lineLimit(2)
+                                                    .multilineTextAlignment(.leading)
                                             }
+                                            // 🔧 Fix: force all cards to same width
+                                            .frame(width: 140, alignment: .leading)
                                         }
                                     }
                                 }
@@ -164,7 +167,6 @@ struct HomeView: View {
                 .buttonStyle(.plain)
             }
         } else {
-            // No active playback → nothing shown
             EmptyView()
         }
     }
