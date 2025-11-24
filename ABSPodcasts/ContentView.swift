@@ -13,12 +13,10 @@ struct ContentView: View {
     var body: some View {
         Group {
             if let client, isConnected {
-                // Main app with global tab bar
-                MainTabView(client: client)
-                    // 👉 Attach the mini player *inside* the safe area,
-                    // so it appears above the tab bar instead of on top of it.
-                    .safeAreaInset(edge: .bottom) {
+                MainTabView(client: client, onLogout: logout)
+                    .overlay(alignment: .bottom) {
                         globalMiniPlayerBar
+                            .padding(.bottom, 50) // keep mini player above tab bar
                     }
             } else {
                 // Login / connect screen
@@ -30,11 +28,11 @@ struct ContentView: View {
             NowPlayingView()
                 .environmentObject(playerManager)
         }
-        // Try to auto-connect on launch if we have saved credentials
+        // Auto-connect on launch
         .onAppear {
             restoreSavedClientIfPossible()
         }
-        // When connection status flips to true, persist credentials for next launch
+        // Persist credentials when we successfully connect
         .onChange(of: isConnected) { newValue in
             if newValue {
                 persistClient()
@@ -51,19 +49,14 @@ struct ContentView: View {
 
     // MARK: - Global Mini Player Bar
 
-    /// A mini player that appears at the bottom of the app (above the tab bar)
-    /// when something is currently loaded in the PlayerManager.
     private var globalMiniPlayerBar: some View {
         Group {
             if let show = playerManager.currentLibraryItem,
                let episode = playerManager.currentEpisode {
 
-                Button {
-                    // Show full Now Playing sheet
-                    playerManager.isPresented = true
-                } label: {
+                HStack(spacing: 12) {
+                    // LEFT SIDE: artwork + text → tap opens full player
                     HStack(spacing: 12) {
-                        // Cover art
                         if let coverURL = URL.absCoverURL(
                             base: playerManager.serverURL,
                             itemId: show.id,
@@ -84,7 +77,6 @@ struct ContentView: View {
                             .cornerRadius(6)
                         }
 
-                        // Title + status
                         VStack(alignment: .leading, spacing: 2) {
                             Text(episode.title)
                                 .font(.caption)
@@ -93,28 +85,50 @@ struct ContentView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        playerManager.isPresented = true
+                    }
 
-                        Spacer()
+                    Spacer()
 
-                        // Icon reflects playback state
+                    // RIGHT SIDE: play/pause button → just toggles playback
+                    Button {
+                        playerManager.togglePlayPause()
+                    } label: {
                         Image(systemName: playerManager.isPlaying ? "pause.fill" : "play.fill")
                             .font(.title3)
                     }
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
-                    .background(
-                        Rectangle()
-                            .fill(Color(.systemBackground).opacity(0.95))
-                            .shadow(radius: 4)
-                    )
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(
+                    Rectangle()
+                        .fill(Color(.systemBackground).opacity(0.95))
+                        .shadow(radius: 4)
+                )
                 .padding(.horizontal)
             } else {
-                // No active item → no mini player, takes essentially no space
                 EmptyView()
             }
         }
+    }
+
+    // MARK: - Logout
+
+    private func logout() {
+        // Stop playback and clear player state
+        playerManager.stop()
+
+        // Clear client + connection
+        client = nil
+        isConnected = false
+
+        // Clear stored credentials
+        savedServerURL = ""
+        savedApiToken = ""
     }
 
     // MARK: - Persistence
@@ -145,39 +159,29 @@ struct ContentView: View {
 
 // MARK: - Main Tab View
 
-/// Global bottom navigation bar: Home / Podcasts / Episodes.
 struct MainTabView: View {
     let client: ABSClient
+    let onLogout: () -> Void
 
     var body: some View {
         TabView {
             // HOME
-            HomeView(client: client)
+            HomeView(client: client, onLogout: onLogout)
                 .tabItem {
                     Label("Home", systemImage: "house.fill")
                 }
 
-            // PODCASTS (for now this is also HomeView – you can swap to a dedicated podcasts view later)
-            HomeView(client: client)
+            // LIBRARY
+            PodcastsView(client: client, onLogout: onLogout)
                 .tabItem {
-                    Label("Podcasts", systemImage: "dot.radiowaves.left.and.right")
+                    Label("Library", systemImage: "dot.radiowaves.left.and.right")
                 }
 
-            // EPISODES placeholder (your per-podcast episodes screen is EpisodeListView)
-            EpisodesTabPlaceholderView()
+            // EPISODES
+            EpisodesTabView(client: client, onLogout: onLogout)
                 .tabItem {
                     Label("Episodes", systemImage: "list.bullet")
                 }
-        }
-    }
-}
-
-struct EpisodesTabPlaceholderView: View {
-    var body: some View {
-        NavigationStack {
-            Text("Open a podcast to see its episodes. The Episodes screen for each show has filters for date, category, and tags.")
-                .padding()
-                .navigationTitle("Episodes")
         }
     }
 }

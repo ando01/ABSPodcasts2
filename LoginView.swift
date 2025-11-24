@@ -1,30 +1,68 @@
 import SwiftUI
 
 struct LoginView: View {
-    @EnvironmentObject var playerManager: PlayerManager
-
     @Binding var isConnected: Bool
     @Binding var client: ABSClient?
 
-    @State private var serverURLString = ""
-    @State private var apiToken = ""
+    @State private var serverURLString: String = ""
+    @State private var apiToken: String = ""
+
+    @State private var username: String = ""
+    @State private var password: String = ""
+
+    @State private var loginMode: LoginMode = .apiToken
+    @State private var isLoading: Bool = false
     @State private var errorMessage: String?
-    @State private var isLoading = false
+
+    enum LoginMode: String, CaseIterable, Identifiable {
+        case apiToken = "API Token"
+        case credentials = "Username & Password"
+
+        var id: String { rawValue }
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Audiobookshelf Server") {
-
-                    TextField("Server URL", text: $serverURLString)
+                Section("Server") {
+                    TextField("Server URL (e.g. https://abs.yourdomain.com)", text: $serverURLString)
+                        .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                }
 
-                    SecureField("API Token", text: $apiToken)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                Section("Login Method") {
+                    Picker("Login Method", selection: $loginMode) {
+                        ForEach(LoginMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
 
+                if loginMode == .apiToken {
+                    Section("API Token") {
+                        SecureField("API Token", text: $apiToken)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                } else {
+                    Section("Credentials") {
+                        TextField("Username", text: $username)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        SecureField("Password", text: $password)
+                    }
+                }
+
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage)
+                            .foregroundColor(.red)
+                    }
+                }
+
+                Section {
                     Button {
                         Task { await connect() }
                     } label: {
@@ -32,52 +70,74 @@ struct LoginView: View {
                             ProgressView()
                         } else {
                             Text("Connect")
+                                .frame(maxWidth: .infinity, alignment: .center)
                         }
                     }
-                    .disabled(serverURLString.isEmpty || apiToken.isEmpty || isLoading)
-                }
-
-                if let errorMessage {
-                    Section {
-                        Text(errorMessage)
-                            .foregroundColor(.red)
-                            .font(.footnote)
-                    }
+                    .disabled(isLoading || !canSubmit)
                 }
             }
-            .navigationTitle("Connect")
+            .navigationTitle("Connect to Server")
         }
     }
 
-    // MARK: - Connect
-    private func connect() async {
-        errorMessage = nil
-        isLoading = true
+    // MARK: - Helpers
 
-        guard let url = URL(string: serverURLString) else {
-            errorMessage = "Invalid server URL."
-            isLoading = false
+    private var canSubmit: Bool {
+        guard let _ = URL(string: serverURLString) else { return false }
+
+        switch loginMode {
+        case .apiToken:
+            return !apiToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .credentials:
+            return !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                   !password.isEmpty
+        }
+    }
+
+    private func connect() async {
+        guard let baseURL = URL(string: serverURLString) else {
+            await MainActor.run {
+                errorMessage = "Please enter a valid server URL."
+            }
             return
         }
 
-        let newClient = ABSClient(serverURL: url, apiToken: apiToken)
-        client = newClient
-
-        playerManager.serverURL = url
-        playerManager.apiToken = apiToken
+        await MainActor.run {
+            isLoading = true
+            errorMessage = nil
+        }
 
         do {
-            let libs = try await newClient.fetchLibraries()
+            let newClient: ABSClient
+
+            switch loginMode {
+            case .apiToken:
+                // Just construct the client with the token
+                newClient = ABSClient(serverURL: baseURL, apiToken: apiToken)
+
+            case .credentials:
+                // Call /api/login to get a token
+                newClient = try await ABSClient.login(
+                    serverURL: baseURL,
+                    username: username,
+                    password: password
+                )
+            }
 
             await MainActor.run {
-                playerManager.availableLibraries = libs   // 👈 REQUIRED for HomeView
-                isConnected = true                        // 👈 triggers HomeView to appear
-                isLoading = false
+                self.client = newClient
+                self.isConnected = true
+                self.isLoading = false
             }
         } catch {
             await MainActor.run {
-                errorMessage = error.localizedDescription
-                isLoading = false
+                if let absError = error as? ABSClient.ABSError,
+                   case .httpStatus(401) = absError {
+                    self.errorMessage = "Invalid username or password."
+                } else {
+                    self.errorMessage = error.localizedDescription
+                }
+                self.isLoading = false
             }
         }
     }

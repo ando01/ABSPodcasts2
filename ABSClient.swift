@@ -356,3 +356,58 @@ extension URL {
     }
 }
 
+// MARK: - Username & password login extension
+
+// MARK: - Username & password login extension
+
+extension ABSClient {
+    private struct LoginRequest: Encodable {
+        let username: String
+        let password: String
+    }
+
+    private struct LoginResponse: Decodable {
+        struct User: Decodable {
+            let id: String
+            let username: String
+            let token: String
+        }
+
+        let user: User
+        let userDefaultLibraryId: String?
+        // serverSettings and other fields exist but we don't need them
+    }
+
+    /// Log in using username & password, returning a configured ABSClient.
+    static func login(
+        serverURL: URL,
+        username: String,
+        password: String
+    ) async throws -> ABSClient {
+        // ✅ Correct endpoint is /login (no /api prefix)
+        let endpoint = serverURL.appending(path: "/login")
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body = LoginRequest(username: username, password: password)
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let http = response as? HTTPURLResponse else {
+            throw ABSError.invalidResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw ABSError.httpStatus(http.statusCode)
+        }
+
+        let decoded = try JSONDecoder().decode(LoginResponse.self, from: data)
+
+        // ✅ Token is nested under user.token
+        return ABSClient(serverURL: serverURL, apiToken: decoded.user.token)
+    }
+}
+
+

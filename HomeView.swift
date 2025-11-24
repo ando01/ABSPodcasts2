@@ -2,334 +2,220 @@ import SwiftUI
 
 struct HomeView: View {
     let client: ABSClient
+    let onLogout: () -> Void
 
     @EnvironmentObject var playerManager: PlayerManager
 
     @State private var libraries: [ABSClient.Library] = []
-    @State private var isLoadingLibraries = true
-    @State private var librariesError: String?
-
     @State private var selectedLibrary: ABSClient.Library?
-    @State private var recentItems: [ABSClient.LibraryItem] = []
-    @State private var isLoadingRecent = false
-    @State private var itemsError: String?
+    @State private var items: [ABSClient.LibraryItem] = []
+
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+
+    // Recently added, sorted by best date
+    private var sortedItems: [ABSClient.LibraryItem] {
+        items.sorted { ($0.bestDate ?? .distantPast) > ($1.bestDate ?? .distantPast) }
+    }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 24) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
 
-                        // MARK: Library picker row (top)
+                    // Library picker
+                    if !libraries.isEmpty {
                         HStack {
-                            if let selectedLibrary {
-                                Menu {
-                                    ForEach(libraries, id: \.id) { lib in
-                                        Button(lib.name) {
-                                            self.selectedLibrary = lib
-                                            Task { await loadRecentItems() }
-                                        }
-                                    }
-                                } label: {
-                                    HStack(spacing: 4) {
-                                        Text(selectedLibrary.name)
-                                            .font(.title3)
-                                            .bold()
-                                        Image(systemName: "chevron.down")
-                                            .font(.caption)
-                                    }
-                                    .foregroundStyle(.blue)
-                                }
-                            } else {
-                                Text("Loading libraries…")
-                                    .font(.title3)
-                                    .bold()
-                            }
+                            Text("Podcasts")
+                                .font(.headline)
 
                             Spacer()
+
+                            Menu {
+                                ForEach(libraries, id: \.id) { lib in
+                                    Button(lib.name) {
+                                        Task { await selectLibrary(lib) }
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text(selectedLibrary?.name ?? "Select Library")
+                                    Image(systemName: "chevron.down")
+                                        .font(.caption)
+                                }
+                                .font(.subheadline)
+                            }
                         }
-                        .padding(.horizontal)
-                        .padding(.top, 8)
+                    }
 
-                        if let librariesError {
-                            Text(librariesError)
-                                .foregroundStyle(.red)
-                                .padding(.horizontal)
+                    // Continue Listening
+                    continueListeningSection
+
+                    // Recently Added
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Recently Added")
+                            .font(.headline)
+
+                        if isLoading && items.isEmpty {
+                            ProgressView("Loading…")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else if let errorMessage {
+                            Text(errorMessage)
+                                .foregroundColor(.red)
+                        } else if sortedItems.isEmpty {
+                            Text("No items in this library.")
+                                .foregroundColor(.secondary)
+                        } else {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 16) {
+                                    ForEach(sortedItems, id: \.id) { item in
+                                        NavigationLink {
+                                            EpisodeListView(client: client, libraryItem: item)
+                                        } label: {
+                                            VStack(alignment: .leading, spacing: 6) {
+                                                PodcastCoverView(client: client, item: item)
+                                                    .frame(width: 140, height: 140)
+                                                    .cornerRadius(14)
+
+                                                Text(item.displayTitle)
+                                                    .font(.caption)
+                                                    .lineLimit(2)
+                                            }
+                                        }
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                            }
                         }
-
-                        // MARK: Continue Listening
-                        continueListeningSection
-
-                        // MARK: Recently Added
-                        recentlyAddedSection
-
-                        Spacer(minLength: 40)
                     }
                 }
+                .padding()
             }
             .navigationTitle("Home")
-            .navigationBarTitleDisplayMode(.inline)
             .task {
                 await loadLibrariesIfNeeded()
             }
-        }
-    }
-
-    // MARK: - Continue Listening
-
-    private var continueListeningSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Continue Listening")
-                .font(.headline)
-                .padding(.horizontal)
-
-            if let show = playerManager.currentLibraryItem,
-               let episode = playerManager.currentEpisode {
-
-                HStack(spacing: 12) {
-                    // Cover art
-                    if let coverURL = URL.absCoverURL(
-                        base: client.serverURL,
-                        itemId: show.id,
-                        token: client.apiToken,
-                        width: 200
-                    ) {
-                        AsyncImage(url: coverURL) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image
-                                    .resizable()
-                                    .scaledToFill()
-                            default:
-                                Color.gray.opacity(0.2)
-                            }
-                        }
-                        .frame(width: 56, height: 56)
-                        .cornerRadius(8)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Log Out") {
+                        onLogout()
                     }
-
-                    // Title + hint
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(episode.title)
-                            .font(.subheadline)
-                            .lineLimit(2)
-                        Text(playerManager.isPlaying ? "Tap player to view" : "Tap to resume")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    // Play/Pause button that actually controls playback
-                    Button {
-                        toggleContinuePlayback(show: show, episode: episode)
-                    } label: {
-                        Image(systemName: playerManager.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.title2)
-                            .padding(8)
-                            .background(
-                                Circle()
-                                    .fill(Color.blue.opacity(0.12))
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding()
-                .background(
-                    RoundedRectangle(cornerRadius: 14)
-                        .fill(Color(.systemGray6))
-                )
-                .padding(.horizontal)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    // Tapping the card opens the full Now Playing sheet
-                    playerManager.isPresented = true
-                }
-
-            } else {
-                Text("Nothing to resume yet.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal)
-            }
-        }
-    }
-
-    /// Actually handle play/pause from the Continue Listening card.
-    /// - If something is already playing, this will pause.
-    /// - If paused (or not started), this will start/resume the current episode.
-    private func toggleContinuePlayback(show: ABSClient.LibraryItem, episode: ABSClient.Episode) {
-        // If the current item is already playing, pause it.
-        if playerManager.isPlaying {
-            // Assumes PlayerManager has a pause() method.
-            // If this does not exist, we can adjust to your actual API.
-            playerManager.pause()
-            return
-        }
-
-        // Not playing: (re)start playback for this episode
-        guard let urlString = episode.enclosure?.url,
-              let url = URL(string: urlString) else {
-            return
-        }
-
-        // Use the same pattern as PodcastDetailView
-        let artworkURL = URL.absCoverURL(
-            base: client.serverURL,
-            itemId: show.id,
-            token: client.apiToken,
-            width: 400
-        )
-
-        playerManager.start(
-            libraryItem: show,
-            episode: episode,
-            audioURL: url,
-            artworkURL: artworkURL
-        )
-    }
-
-    // MARK: - Recently Added
-
-    private var recentlyAddedSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Recently Added")
-                    .font(.headline)
-                Spacer()
-            }
-            .padding(.horizontal)
-
-            if let itemsError {
-                Text(itemsError)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal)
-            } else if isLoadingRecent {
-                ProgressView()
-                    .padding(.horizontal)
-            } else if recentItems.isEmpty {
-                Text("No items found.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal)
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 16) {
-                        ForEach(recentItems, id: \.id) { item in
-                            NavigationLink {
-                                destinationView(for: item)
-                            } label: {
-                                recentItemCard(for: item)
-                            }
-                        }
-                    }
-                    .padding(.horizontal)
                 }
             }
         }
     }
 
-    private func recentItemCard(for item: ABSClient.LibraryItem) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(.systemGray5))
-                    .frame(width: 140, height: 140)
-
-                if let coverURL = URL.absCoverURL(
-                    base: client.serverURL,
-                    itemId: item.id,
-                    token: client.apiToken,
-                    width: 300
-                ) {
-                    AsyncImage(url: coverURL) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFill()
-                        default:
-                            Color.gray.opacity(0.2)
-                        }
-                    }
-                    .frame(width: 140, height: 140)
-                    .clipped()
-                    .cornerRadius(12)
-                }
-            }
-
-            Text(item.displayTitle)
-                .font(.caption)
-                .lineLimit(2)
-                .frame(width: 140, alignment: .leading)
-        }
-    }
-
-    // MARK: - Routing
+    // MARK: - Continue Listening card
 
     @ViewBuilder
-    private func destinationView(for item: ABSClient.LibraryItem) -> some View {
-        if item.mediaType?.lowercased() == "book" {
-            AudiobookDetailView(item: item, client: client)
+    private var continueListeningSection: some View {
+        if let show = playerManager.currentLibraryItem,
+           let episode = playerManager.currentEpisode {
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Continue Listening")
+                    .font(.headline)
+
+                Button {
+                    playerManager.isPresented = true
+                } label: {
+                    HStack(spacing: 12) {
+                        if let coverURL = URL.absCoverURL(
+                            base: playerManager.serverURL,
+                            itemId: show.id,
+                            token: playerManager.apiToken,
+                            width: 200
+                        ) {
+                            AsyncImage(url: coverURL) { phase in
+                                switch phase {
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .scaledToFill()
+                                default:
+                                    Color.gray.opacity(0.2)
+                                }
+                            }
+                            .frame(width: 60, height: 60)
+                            .cornerRadius(10)
+                        }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(episode.title)
+                                .font(.subheadline)
+                                .lineLimit(2)
+                            Text("Tap player to view")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: playerManager.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.title3)
+                            .foregroundColor(.primary)
+                    }
+                    .padding()
+                    .background(
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(Color(.systemGray6))
+                    )
+                }
+                .buttonStyle(.plain)
+            }
         } else {
-            EpisodeListView(client: client, libraryItem: item)
+            // No active playback → nothing shown
+            EmptyView()
         }
     }
 
     // MARK: - Loading
 
     private func loadLibrariesIfNeeded() async {
-        guard isLoadingLibraries else { return }
+        guard libraries.isEmpty else { return }
+        isLoading = true
+        errorMessage = nil
 
         do {
             let libs = try await client.fetchLibraries()
-            await MainActor.run {
-                self.libraries = libs
-                self.isLoadingLibraries = false
+            let podcastLibs = libs.filter { $0.mediaType.lowercased().contains("podcast") }
+            let chosenList = podcastLibs.isEmpty ? libs : podcastLibs
 
-                // Default to podcasts if available, else first library
-                if let podcastLib = libs.first(where: { $0.mediaType.lowercased() == "podcast" }) {
-                    self.selectedLibrary = podcastLib
-                } else {
-                    self.selectedLibrary = libs.first
-                }
+            await MainActor.run {
+                self.libraries = chosenList
             }
 
-            await loadRecentItems()
+            if let first = chosenList.first {
+                await selectLibrary(first)
+            } else {
+                await MainActor.run { self.isLoading = false }
+            }
         } catch {
             await MainActor.run {
-                self.librariesError = error.localizedDescription
-                self.isLoadingLibraries = false
+                self.errorMessage = error.localizedDescription
+                self.isLoading = false
             }
         }
     }
 
-    private func loadRecentItems() async {
-        guard let library = selectedLibrary else {
-            await MainActor.run {
-                self.recentItems = []
-            }
-            return
-        }
-
+    private func selectLibrary(_ library: ABSClient.Library) async {
         await MainActor.run {
-            self.isLoadingRecent = true
-            self.itemsError = nil
+            selectedLibrary = library
+            isLoading = true
+            errorMessage = nil
+            items = []
         }
 
         do {
-            let items = try await client.fetchLibraryItems(libraryId: library.id)
-            let sorted = items.sorted { (a, b) in
-                (a.bestDate ?? .distantPast) > (b.bestDate ?? .distantPast)
-            }
+            let fetched = try await client.fetchLibraryItems(libraryId: library.id)
             await MainActor.run {
-                self.recentItems = Array(sorted.prefix(20))
-                self.isLoadingRecent = false
+                self.items = fetched
+                self.isLoading = false
             }
         } catch {
             await MainActor.run {
-                self.itemsError = error.localizedDescription
-                self.isLoadingRecent = false
+                self.errorMessage = error.localizedDescription
+                self.isLoading = false
             }
         }
     }
