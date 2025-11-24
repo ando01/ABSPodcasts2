@@ -225,6 +225,7 @@ struct ABSClient {
         do {
             let decoder = JSONDecoder()
 
+            // Try a wrapper shape first (libraryItems/results/items)
             if let wrapper = try? decoder.decode(LibraryItemsWrapper.self, from: data) {
                 let items = wrapper.allItems
                 if !items.isEmpty {
@@ -232,6 +233,7 @@ struct ABSClient {
                 }
             }
 
+            // Fallback to a plain array
             let array = try decoder.decode([LibraryItem].self, from: data)
             return array
         } catch {
@@ -304,25 +306,36 @@ struct ABSClient {
         request.httpMethod = "GET" // many setups allow GET; adjust to POST if needed
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw ABSError.other(error)
+        }
 
         guard let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode)
         else {
-            throw ABSError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? -1)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw ABSError.httpStatus(status)
         }
 
         struct PlayResponse: Decodable {
             let url: String
         }
 
-        let decoded = try JSONDecoder().decode(PlayResponse.self, from: data)
-
-        guard let url = URL(string: decoded.url) else {
-            throw ABSError.invalidResponse
+        do {
+            let decoded = try JSONDecoder().decode(PlayResponse.self, from: data)
+            guard let url = URL(string: decoded.url) else {
+                throw ABSError.invalidResponse
+            }
+            return url
+        } catch {
+            if let jsonString = String(data: data, encoding: .utf8) {
+                print("DEBUG: Failed to decode play URL. Raw JSON:\n\(jsonString)")
+            }
+            throw ABSError.decodingError(error)
         }
-
-        return url
     }
 }
 
