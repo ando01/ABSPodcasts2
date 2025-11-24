@@ -11,20 +11,19 @@ struct ContentView: View {
     @State private var isConnected: Bool = false
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            // Main app vs login
-            Group {
-                if let client, isConnected {
-                    // Main app home screen
-                    HomeView(client: client)
-                } else {
-                    // Login / connect screen
-                    LoginView(isConnected: $isConnected, client: $client)
-                }
+        Group {
+            if let client, isConnected {
+                // Main app with global tab bar
+                MainTabView(client: client)
+                    // 👉 Attach the mini player *inside* the safe area,
+                    // so it appears above the tab bar instead of on top of it.
+                    .safeAreaInset(edge: .bottom) {
+                        globalMiniPlayerBar
+                    }
+            } else {
+                // Login / connect screen
+                LoginView(isConnected: $isConnected, client: $client)
             }
-
-            // Global floating mini player, visible on any screen
-            globalMiniPlayerBar
         }
         // Global Now Playing sheet
         .sheet(isPresented: $playerManager.isPresented) {
@@ -52,8 +51,8 @@ struct ContentView: View {
 
     // MARK: - Global Mini Player Bar
 
-    /// A floating mini player that appears at the bottom of the app,
-    /// regardless of which screen you're on.
+    /// A mini player that appears at the bottom of the app (above the tab bar)
+    /// when something is currently loaded in the PlayerManager.
     private var globalMiniPlayerBar: some View {
         Group {
             if let show = playerManager.currentLibraryItem,
@@ -111,9 +110,8 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal)
-                .padding(.bottom, 4)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
             } else {
+                // No active item → no mini player, takes essentially no space
                 EmptyView()
             }
         }
@@ -142,6 +140,45 @@ struct ContentView: View {
         guard let client else { return }
         playerManager.serverURL = client.serverURL
         playerManager.apiToken = client.apiToken
+    }
+}
+
+// MARK: - Main Tab View
+
+/// Global bottom navigation bar: Home / Podcasts / Episodes.
+struct MainTabView: View {
+    let client: ABSClient
+
+    var body: some View {
+        TabView {
+            // HOME
+            HomeView(client: client)
+                .tabItem {
+                    Label("Home", systemImage: "house.fill")
+                }
+
+            // PODCASTS (for now this is also HomeView – you can swap to a dedicated podcasts view later)
+            HomeView(client: client)
+                .tabItem {
+                    Label("Podcasts", systemImage: "dot.radiowaves.left.and.right")
+                }
+
+            // EPISODES placeholder (your per-podcast episodes screen is EpisodeListView)
+            EpisodesTabPlaceholderView()
+                .tabItem {
+                    Label("Episodes", systemImage: "list.bullet")
+                }
+        }
+    }
+}
+
+struct EpisodesTabPlaceholderView: View {
+    var body: some View {
+        NavigationStack {
+            Text("Open a podcast to see its episodes. The Episodes screen for each show has filters for date, category, and tags.")
+                .padding()
+                .navigationTitle("Episodes")
+        }
     }
 }
 
