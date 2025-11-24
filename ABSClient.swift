@@ -51,20 +51,20 @@ struct ABSClient {
     }
 
     /// Audiobookshelf Library Item (used for podcasts/books)
-    struct LibraryItem: Identifiable, Decodable {
+    struct LibraryItem: Identifiable, Decodable, Hashable {
         let id: String
         let libraryId: String?
         let mediaType: String?
         let media: Media?
         let tags: [String]?
 
-        struct Media: Decodable {
+        struct Media: Decodable, Hashable {
             let metadata: Metadata?
             let coverPath: String?
             let tags: [String]?
         }
 
-        struct Metadata: Decodable {
+        struct Metadata: Decodable, Hashable {
             let title: String?
             let subtitle: String?
             let description: String?
@@ -225,7 +225,6 @@ struct ABSClient {
         do {
             let decoder = JSONDecoder()
 
-            // Try a wrapper shape first (libraryItems/results/items)
             if let wrapper = try? decoder.decode(LibraryItemsWrapper.self, from: data) {
                 let items = wrapper.allItems
                 if !items.isEmpty {
@@ -233,7 +232,6 @@ struct ABSClient {
                 }
             }
 
-            // Fallback to a plain array
             let array = try decoder.decode([LibraryItem].self, from: data)
             return array
         } catch {
@@ -303,39 +301,28 @@ struct ABSClient {
         let endpoint = serverURL.appending(path: "/api/items/\(libraryItemId)/play")
 
         var request = URLRequest(url: endpoint)
-        request.httpMethod = "GET" // many setups allow GET; adjust to POST if needed
+        request.httpMethod = "GET" // change to POST if your server expects it
         request.setValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
 
-        let (data, response): (Data, URLResponse)
-        do {
-            (data, response) = try await URLSession.shared.data(for: request)
-        } catch {
-            throw ABSError.other(error)
-        }
+        let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode)
         else {
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw ABSError.httpStatus(status)
+            throw ABSError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? -1)
         }
 
         struct PlayResponse: Decodable {
             let url: String
         }
 
-        do {
-            let decoded = try JSONDecoder().decode(PlayResponse.self, from: data)
-            guard let url = URL(string: decoded.url) else {
-                throw ABSError.invalidResponse
-            }
-            return url
-        } catch {
-            if let jsonString = String(data: data, encoding: .utf8) {
-                print("DEBUG: Failed to decode play URL. Raw JSON:\n\(jsonString)")
-            }
-            throw ABSError.decodingError(error)
+        let decoded = try JSONDecoder().decode(PlayResponse.self, from: data)
+
+        guard let url = URL(string: decoded.url) else {
+            throw ABSError.invalidResponse
         }
+
+        return url
     }
 }
 
