@@ -458,6 +458,7 @@ final class PlayerManager: ObservableObject {
     private func setupRemoteCommandCenter() {
         let commandCenter = MPRemoteCommandCenter.shared()
 
+        // Play / pause
         commandCenter.playCommand.addTarget { [weak self] _ in
             self?.play()
             return .success
@@ -473,6 +474,7 @@ final class PlayerManager: ObservableObject {
             return .success
         }
 
+        // Skip forward/back by specific intervals (Control Center, some head units)
         commandCenter.skipForwardCommand.preferredIntervals = [30]
         commandCenter.skipForwardCommand.addTarget { [weak self] _ in
             self?.skipForward(seconds: 30)
@@ -484,7 +486,19 @@ final class PlayerManager: ObservableObject {
             self?.skipBackward(seconds: 15)
             return .success
         }
+
+        // AirPods & headphone controls usually trigger "next/previous track"
+        commandCenter.nextTrackCommand.addTarget { [weak self] _ in
+            self?.skipForward(seconds: 30)
+            return .success
+        }
+
+        commandCenter.previousTrackCommand.addTarget { [weak self] _ in
+            self?.skipBackward(seconds: 15)
+            return .success
+        }
     }
+
 
     // MARK: - Helpers
 
